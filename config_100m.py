@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class FSTConfig100M:
     """100M parameter config for FST-Net."""
-    vocab_size: int = 32768
+    vocab_size: int = 32770
     d_model: int = 1024
     n_heads: int = 16
     n_kv_heads: int = 4
