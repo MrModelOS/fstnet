@@ -81,13 +81,13 @@ def make_samples(path):
         samples.append((x, y))
     return samples
 
+import torch, torch.nn as nn
 class DS(torch.utils.data.Dataset):
     def __init__(self, s): self.s = s
     def __len__(self): return len(self.s)
     def __getitem__(self, i):
         return torch.tensor(self.s[i][0], dtype=torch.long), torch.tensor(self.s[i][1], dtype=torch.long)
 
-import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
