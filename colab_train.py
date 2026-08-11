@@ -8,7 +8,7 @@ def setup():
     subprocess.run(["pip", "install", "-q", "torch", "transformers", "datasets", 
                     "tokenizers", "tqdm", "safetensors"], check=True)
     
-    if not os.path.exists("fstnet"):
+    if not os.path.exists("config.py"):
         subprocess.run(["git", "clone", "https://github.com/MrModelOS/fstnet.git"], check=True)
     
     os.chdir("fstnet")
