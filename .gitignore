@@ -1,0 +1,33 @@
+# Checkpoints и модели (большие файлы)
+checkpoints/
+*.pt
+*.bin
+*.gguf
+*.safetensors
+
+# Data
+data/
+*.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Ollama
+.ollama/

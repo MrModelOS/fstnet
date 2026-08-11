@@ -1,0 +1,2 @@
+FROM ./checkpoints/fstnet-64m-f32.gguf
+PARAMETER num_ctx 512

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "fstnet-ggm": {
+      "type": "local",
+      "command": "python3",
+      "args": ["/home/mrmodel/Проекты/MyAi/fstnet/mcp_server.py", "--port", "8765"],
+      "enabled": true
+    }
+  },
+  "providers": {
+    "fstnet": {
+      "type": "openai",
+      "name": "FST-Net 64M",
+      "baseURL": "http://localhost:8000/v1",
+      "apiKey": "fstnet-local",
+      "models": [
+        {
+          "id": "fstnet-64m",
+          "name": "FST-Net 64M",
+          "contextSize": 512,
+          "maxTokens": 256,
+          "compat": { "maxTokensField": "max_tokens" }
+        }
+      ]
+    }
+  }
+}
