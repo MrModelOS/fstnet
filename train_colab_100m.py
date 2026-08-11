@@ -1,8 +1,10 @@
-import math
 #!/usr/bin/env python3
-"""FST-Net 100M training for Google Colab T4 GPU."""
-import os, json, time, subprocess
+"""FST-Net 100M training for Colab T4. Optimized batch + HF_TOKEN + tmux-friendly."""
+import os, json, time, subprocess, math
 from datetime import datetime
+
+# HF token (set via env or uncomment)
+# os.environ["HF_TOKEN"] = "hf_xxx"
 
 subprocess.run(["pip", "install", "-q", "transformers", "datasets", "tokenizers", "tqdm"], check=True)
 
@@ -41,10 +43,13 @@ log(f"  gsm8k: {len(gsm8k)}")
 
 with open("data/train_extra.json", "w") as f:
     json.dump(ultrachat + gsm8k, f)
-log(f"Total: {len(ultrachat) + len(gsm8k)} samples")
+log(f"Total: {len(ultrachat) + len(gsm8k)}")
 
 # Model
-import sys
+import sys, torch, torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 sys.path.insert(0, os.getcwd())
 from model.core import FSTNetCore
 from config_100m import FSTConfig100M
@@ -82,23 +87,23 @@ def make_samples(path):
         samples.append((x, y))
     return samples
 
-import torch, torch.nn as nn
 class DS(torch.utils.data.Dataset):
     def __init__(self, s): self.s = s
     def __len__(self): return len(self.s)
     def __getitem__(self, i):
         return torch.tensor(self.s[i][0], dtype=torch.long), torch.tensor(self.s[i][1], dtype=torch.long)
 
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-
 samples = make_samples("data/train_extra.json")
 log(f"Samples: {len(samples)}")
 ds = DS(samples)
-loader = DataLoader(ds, batch_size=2, shuffle=True, num_workers=0, drop_last=True)
+
+# Optimized: batch=8, accum=4 on T4
+BATCH = 8
+ACCUM = 4
+loader = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, drop_last=True)
 
 opt = torch.optim.AdamW(model.parameters(), lr=1e-4, foreach=False)
-total_steps = 3 * len(ds) // 2
+total_steps = 3 * len(ds) // (BATCH * ACCUM)
 sch = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.5*(1+math.cos(math.pi*s/total_steps)))
 crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
 
@@ -108,14 +113,16 @@ model.train()
 step = 0
 start_time = time.time()
 
-log(f"Training: {total_steps} steps, batch=2, seq={SEQ}")
+log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM}, seq={SEQ}")
 log("="*60)
 
 for epoch in range(3):
     pbar = tqdm(loader, desc=f"E{epoch+1}/3")
+    optimizer.zero_grad()
+    accum_loss = 0.0
+    
     for bx, by in pbar:
         bx, by = bx.to(device), by.to(device)
-        opt.zero_grad()
         h, _ = model(bx, target_cycles=4, return_hidden=True)
         ls = torch.tensor(0.0, device=device)
         nv = 0
@@ -124,15 +131,21 @@ for epoch in range(3):
             l = crit(model.head(h[:,s:e]).view(-1, cfg.vocab_size), by[:,s:e].reshape(-1))
             ls += l
             nv += (by[:,s:e] != IGNORE).sum().item()
-        (ls/max(nv,1)).backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
-        sch.step()
+        loss = ls / max(nv, 1) / ACCUM
+        loss.backward()
+        accum_loss += ls.item() / max(nv, 1)
+        
         step += 1
+        if step % ACCUM == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            sch.step()
+            optimizer.zero_grad()
+        
         if step % 50 == 0:
             elapsed = time.time() - start_time
             eta = elapsed / step * (total_steps - step)
-            log(f"Step {step}/{total_steps} | Loss: {ls.item()/max(nv,1):.4f} | VRAM: {torch.cuda.memory_allocated()/1024**2:.0f}MB | ETA: {eta/60:.0f}min")
+            log(f"Step {step}/{total_steps} | Loss: {accum_loss/ACCUM:.4f} | VRAM: {torch.cuda.memory_allocated()/1024**2:.0f}MB | ETA: {eta/60:.0f}min")
 
 torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/100m/final.pt")
 elapsed = time.time() - start_time
