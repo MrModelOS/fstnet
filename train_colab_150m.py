@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""FST-Net 150M training for Colab T4. Full dataset mix."""
-import os, json, time, subprocess, math
+"""FST-Net 150M training. Optimized: fp16 + cosine LR + validation."""
+import os, json, time, subprocess, math, random
 from datetime import datetime
 
 subprocess.run(["pip", "install", "-q", "transformers", "datasets", "tokenizers", "tqdm"], check=True)
@@ -22,81 +22,50 @@ from datasets import load_dataset
 os.makedirs("data", exist_ok=True)
 all_convs = []
 
-# 1. CodeAlpaca (code)
-log("Loading codealpaca...")
+log("Loading datasets...")
+# CodeAlpaca
 try:
     ds = load_dataset("HuggingFaceH4/CodeAlpaca_20K", split="train")
     for d in ds:
-        instr = d.get("instruction","").strip()
-        inp = d.get("input","").strip()
-        out = d.get("output","").strip()
+        instr, inp, out = d.get("instruction","").strip(), d.get("input","").strip(), d.get("output","").strip()
         if instr and out:
-            prompt = f"{instr}\n{inp}" if inp else instr
-            all_convs.append([("user", prompt), ("assistant", out)])
-    log(f"  codealpaca: {len([c for c in all_convs if c])}")
-except Exception as e:
-    log(f"  codealpaca skip: {e}")
+            all_convs.append([("user", f"{instr}\n{inp}" if inp else instr), ("assistant", out)])
+    log(f"  codealpaca: {len(ds)}")
+except Exception as e: log(f"  codealpaca skip: {e}")
 
-# 2. SlimOrca (reasoning)
-log("Loading slimorca...")
+# SlimOrca
 try:
     ds = load_dataset("Open-Orca/SlimOrca-Dedup", split="train", streaming=True)
-    count = 0
+    cnt = 0
     for d in ds:
         msgs = d.get("conversations", [])
         conv = [(m["from"], m["value"]) for m in msgs if m["from"] in ("human","gpt")]
-        if len(conv) >= 2:
-            all_convs.append(conv)
-            count += 1
-        if count >= 10000: break
-    log(f"  slimorca: {count}")
-except Exception as e:
-    log(f"  slimorca skip: {e}")
+        if len(conv) >= 2: all_convs.append(conv); cnt += 1
+        if cnt >= 10000: break
+    log(f"  slimorca: {cnt}")
+except Exception as e: log(f"  slimorca skip: {e}")
 
-# 3. UltraChat (dialog)
-log("Loading ultrachat...")
+# UltraChat
 ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True)
-count = 0
+cnt = 0
 for d in ds:
     msgs = [(m["role"], m["content"]) for m in d.get("messages", []) if m["role"] in ("user","assistant")]
-    if len(msgs) >= 2:
-        all_convs.append(msgs)
-        count += 1
-    if count >= 10000: break
-log(f"  ultrachat: {count}")
+    if len(msgs) >= 2: all_convs.append(msgs); cnt += 1
+    if cnt >= 10000: break
+log(f"  ultrachat: {cnt}")
 
-# 4. GSM8K (math)
-log("Loading gsm8k...")
+# GSM8K
 ds = load_dataset("openai/gsm8k", "main", split="train")
-for d in ds:
-    all_convs.append([("user", d["question"]), ("assistant", d["answer"])])
+for d in ds: all_convs.append([("user", d["question"]), ("assistant", d["answer"])])
 log(f"  gsm8k: {len(ds)}")
 
-# 5. Bash/commands
-log("Loading bash...")
-try:
-    ds = load_dataset="bart/linux_commands" 
-except:
-    pass
-# Fallback: synthetic bash
-bash_cmds = [
-    ("run ls -la", "ls -la"),
-    ("create folder mkdir test", "mkdir test"),
-    ("find python files", "find . -name '*.py'"),
-    ("check disk space", "df -h"),
-    ("show running processes", "ps aux"),
-]
-for q, a in bash_cmds:
-    all_convs.append([("user", q), ("assistant", a)])
-log(f"  bash: {len(bash_cmds)}")
-
-with open("data/train_full.json", "w") as f:
-    json.dump(all_convs, f)
-log(f"Total: {len(all_convs)} samples")
+with open("data/train_full.json", "w") as f: json.dump(all_convs, f)
+log(f"Total: {len(all_convs)}")
 
 # Model
 import sys, torch, torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 sys.path.insert(0, os.getcwd())
@@ -119,8 +88,7 @@ def make_samples(path):
     samples = []
     for conv in data:
         ids = []
-        for role, content in conv:
-            ids += tok.encode(f"{IM_S}{role}\n{content}{IM_E}").ids
+        for role, content in conv: ids += tok.encode(f"{IM_S}{role}\n{content}{IM_E}").ids
         if len(ids) < 8 or len(ids) > SEQ: continue
         asst = tok.encode(f"{IM_S}assistant\n").ids
         ap = len(ids) // 2
@@ -140,54 +108,96 @@ class DS(torch.utils.data.Dataset):
     def __getitem__(self, i):
         return torch.tensor(self.s[i][0], dtype=torch.long), torch.tensor(self.s[i][1], dtype=torch.long)
 
-samples = make_samples("data/train_full.json")
-log(f"Samples: {len(samples)}")
-ds = DS(samples)
+all_samples = make_samples("data/train_full.json")
+random.seed(42); random.shuffle(all_samples)
+val_split = int(len(all_samples) * 0.05)
+val_samples = all_samples[:val_split]
+train_samples = all_samples[val_split:]
+log(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
 
-BATCH = 8
-ACCUM = 4
-loader = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, drop_last=True)
+train_ds = DS(train_samples)
+val_ds = DS(val_samples)
+train_loader = DataLoader(train_ds, batch_size=8, shuffle=True, num_workers=0, drop_last=True)
+val_loader = DataLoader(val_ds, batch_size=8, shuffle=False, num_workers=0)
 
-opt = torch.optim.AdamW(model.parameters(), lr=1e-4, foreach=False)
-total_steps = 3 * len(ds) // (BATCH * ACCUM)
-sch = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.5*(1+math.cos(math.pi*s/total_steps)))
+# Optimizer: lr=4e-4 with cosine + warmup
+opt = torch.optim.AdamW(model.parameters(), lr=4e-4, foreach=False)
+total_steps = 3 * len(train_ds) // (8 * 4)
+warmup = total_steps // 10
+
+def lr_fn(s):
+    if s < warmup: return (s + 1) / warmup
+    p = (s - warmup) / max(1, total_steps - warmup)
+    return 0.5 * (1 + math.cos(math.pi * p))
+
+sch = torch.optim.lr_scheduler.LambdaLR(opt, lr_fn)
 crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
+scaler = GradScaler()
 
 device = "cuda"
 model = model.to(device)
 model.train()
 step = 0
 start_time = time.time()
+best_val = float("inf")
 
-log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM}")
+log(f"Training: {total_steps} steps, batch=8, accum=4, lr=4e-4, fp16=True")
 log("="*60)
 
 for epoch in range(3):
-    pbar = tqdm(loader, desc=f"E{epoch+1}/3")
+    pbar = tqdm(train_loader, desc=f"E{epoch+1}/3")
     opt.zero_grad()
     for bx, by in pbar:
         bx, by = bx.to(device), by.to(device)
-        h, _ = model(bx, target_cycles=4, return_hidden=True)
-        ls = torch.tensor(0.0, device=device)
-        nv = 0
-        for s in range(0, SEQ, 64):
-            e = min(s+64, SEQ)
-            l = crit(model.head(h[:,s:e]).view(-1, cfg.vocab_size), by[:,s:e].reshape(-1))
-            ls += l
-            nv += (by[:,s:e] != IGNORE).sum().item()
-        (ls/max(nv,1)/ACCUM).backward()
+        with autocast(dtype=torch.float16):
+            h, _ = model(bx, target_cycles=4, return_hidden=True)
+            ls = torch.tensor(0.0, device=device)
+            nv = 0
+            for s in range(0, SEQ, 64):
+                e = min(s+64, SEQ)
+                l = crit(model.head(h[:,s:e]).view(-1, cfg.vocab_size), by[:,s:e].reshape(-1))
+                ls += l
+                nv += (by[:,s:e] != IGNORE).sum().item()
+            loss = ls / max(nv, 1) / 4
+        
+        scaler.scale(loss).backward()
         step += 1
-        if step % ACCUM == 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters__, 1.0)
-            opt.step()
-            sch.step()
+        if step % 4 == 0:
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(opt)
+            scaler.update()
             opt.zero_grad()
+            sch.step()
+        
         if step % 50 == 0:
             elapsed = time.time() - start_time
             eta = elapsed/step*(total_steps-step)
-            log(f"Step {step}/{total_steps} | Loss: {ls.item()/max(nv,1):.4f} | VRAM: {torch.cuda.memory_allocated()/1024**2:.0f}MB | ETA: {eta/60:.0f}min")
+            log(f"Step {step}/{total_steps} | Loss: {ls.item()/max(nv,1):.4f} | LR: {sch.get_last_lr()[0]:.2e} | VRAM: {torch.cuda.memory_allocated()/1024**2:.0f}MB | ETA: {eta/60:.0f}min")
+        
+        # Validation every 500 steps
+        if step % 500 == 0:
+            model.eval()
+            val_loss, val_n = 0.0, 0
+            with torch.no_grad():
+                for vx, vy in val_loader:
+                    vx, vy = vx.to(device), vy.to(device)
+                    with autocast(dtype=torch.float16):
+                        h, _ = model(vx, target_cycles=4, return_hidden=True)
+                        for s in range(0, SEQ, 64):
+                            e = min(s+64, SEQ)
+                            l = crit(model.head(h[:,s:e]).view(-1, cfg.vocab_size), vy[:,s:e].reshape(-1))
+                            val_loss += l.item()
+                            val_n += (vy[:,s:e] != IGNORE).sum().item()
+            val_avg = val_loss / max(val_n, 1)
+            log(f"  VAL LOSS: {val_avg:.4f}")
+            if val_avg < best_val:
+                best_val = val_avg
+                torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/150m/best.pt")
+                log(f"  >> Best checkpoint saved!")
+            model.train()
 
 torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/150m/final.pt")
 elapsed = time.time() - start_time
 log("="*60)
-log(f"DONE: {step} steps in {elapsed/60:.1f} min")
+log(f"DONE: {step} steps in {elapsed/60:.1f} min | Best val: {best_val:.4f}")
