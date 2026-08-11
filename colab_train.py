@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FST-Net training script for Google Colab with T4 GPU."""
 import os, subprocess
+os.makedirs("data", exist_ok=True)
 
 def setup():
     """Install deps and clone repo."""
