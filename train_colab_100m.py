@@ -87,7 +87,7 @@ class DS(torch.utils.data.Dataset):
     def __getitem__(self, i):
         return torch.tensor(self.s[i][0], dtype=torch.long), torch.tensor(self.s[i][1], dtype=torch.long)
 
-import torch, torch.nn as nn
+import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
