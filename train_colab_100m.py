@@ -1,3 +1,4 @@
+import math
 #!/usr/bin/env python3
 """FST-Net 100M training for Google Colab T4 GPU."""
 import os, json, time, subprocess
@@ -98,7 +99,7 @@ loader = DataLoader(ds, batch_size=2, shuffle=True, num_workers=0, drop_last=Tru
 
 opt = torch.optim.AdamW(model.parameters(), lr=1e-4, foreach=False)
 total_steps = 3 * len(ds) // 2
-sch = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.5*(1+__import__('math').cos(math.pi*s/total_steps)))
+sch = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.5*(1+math.cos(math.pi*s/total_steps)))
 crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
 
 device = "cuda"
