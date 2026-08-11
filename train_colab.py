@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
-"""Standalone training script for Google Colab. Assumes you're in the repo folder."""
-import os, json, subprocess
+"""FST-Net training for Google Colab T4 GPU. Saves logs + checkpoints."""
+import os, json, time, subprocess
+from datetime import datetime
 
-# Install deps
 subprocess.run(["pip", "install", "-q", "transformers", "datasets", "tokenizers", "tqdm"], check=True)
 
-# Verify we're in the right place
 if not os.path.exists("config.py"):
-    print("ERROR: run this from the fstnet repo folder")
+    print("ERROR: run from fstnet repo folder")
     exit(1)
 
-print(f"GPU: {os.popen('nvidia-smi --query-gpu=name --format=csv,noheader').read().strip()}", flush=True)
+# ── Setup logging ───────────────────────────────────────
+os.makedirs("logs", exist_ok=True)
+os.makedirs("checkpoints/downtime", exist_ok=True)
+log_file = f"logs/train_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-# Download data
+def log(msg):
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    with open(log_file, "a") as f:
+        f.write(line + "\n")
+
+log(f"GPU: {os.popen('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader').read().strip()}")
+log(f"PyTorch: {torch.__version__}" if 'torch' in dir() else "")
+
+# ── Data ────────────────────────────────────────────────
 from datasets import load_dataset
 
 os.makedirs("data", exist_ok=True)
 
-print("Loading ultrachat_200k...", flush=True)
+log("Loading ultrachat_200k...")
 ds1 = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True)
 ultrachat = []
 for i, d in enumerate(ds1):
@@ -26,18 +38,18 @@ for i, d in enumerate(ds1):
         ultrachat.append(msgs)
     if i >= 10000:
         break
-print(f"  ultrachat: {len(ultrachat)}", flush=True)
+log(f"  ultrachat: {len(ultrachat)}")
 
-print("Loading gsm8k...", flush=True)
+log("Loading gsm8k...")
 ds2 = load_dataset("openai/gsm8k", "main", split="train")
 gsm8k = [[("user", d["question"]), ("assistant", d["answer"])] for d in ds2]
-print(f"  gsm8k: {len(gsm8k)}", flush=True)
+log(f"  gsm8k: {len(gsm8k)}")
 
 with open("data/train_extra.json", "w") as f:
     json.dump(ultrachat + gsm8k, f)
-print(f"Total: {len(ultrachat) + len(gsm8k)} samples", flush=True)
+log(f"Total: {len(ultrachat) + len(gsm8k)} samples")
 
-# Train
+# ── Training ────────────────────────────────────────────
 from config import FSTConfig
 from model.core import FSTNetCore
 from tokenizers import Tokenizer
@@ -73,31 +85,34 @@ class DS(torch.utils.data.Dataset):
     def __init__(self, s): self.s = s
     def __len__(self): return len(self.s)
     def __getitem__(self, i):
-        x, y = self.s[i]
-        return torch.tensor(x, dtype=torch.long), torch.tensor(y, dtype=torch.long)
+        return torch.tensor(self.s[i][0], dtype=torch.long), torch.tensor(self.s[i][1], dtype=torch.long)
 
 cfg = FSTConfig(vocab_size=32770, d_model=896, n_heads=16, n_kv_heads=4, d_ff=3584, n_layers=3, max_seq_len=SEQ)
 model = FSTNetCore(cfg)
 ckpt = torch.load("checkpoints/ft1024/final.pt", map_location="cpu", weights_only=False)
 sd = {k:v for k,v in ckpt["model_state"].items() if "causal_mask" not in k}
 model.load_state_dict(sd, strict=False)
-print(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M", flush=True)
+log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M")
 
 tok = Tokenizer.from_file("tokenizer/fst_bpe.json")
 samples = make_samples("data/train_extra.json", tok)
-print(f"Samples: {len(samples)}", flush=True)
+log(f"Samples: {len(samples)}")
 ds = DS(samples)
 loader = DataLoader(ds, batch_size=4, shuffle=True, num_workers=0, drop_last=True)
 
 opt = torch.optim.AdamW(model.parameters(), lr=2e-5, foreach=False)
-steps = 3 * len(ds) // 4
-sch = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.5*(1+__import__('math').cos(math.pi*s/steps)))
+total_steps = 3 * len(ds) // 4
+sch = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.5*(1+__import__('math').cos(math.pi*s/total_steps)))
 crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
 
 device = "cuda"
 model = model.to(device)
 model.train()
 step = 0
+start_time = time.time()
+
+log(f"Starting training: {total_steps} steps, batch=4, seq={SEQ}")
+log("="*60)
 
 for epoch in range(3):
     pbar = tqdm(loader, desc=f"E{epoch+1}/3")
@@ -117,8 +132,17 @@ for epoch in range(3):
         opt.step()
         sch.step()
         step += 1
+        
+        loss_val = ls.item()/max(nv,1)
         if step % 50 == 0:
-            pbar.set_postfix(loss=f"{ls.item()/max(nv,1):.4f}", vram=f"{torch.cuda.memory_allocated()/1024**2:.0f}MB")
+            elapsed = time.time() - start_time
+            eta = elapsed / step * (total_steps - step)
+            log(f"Step {step}/{total_steps} | Loss: {loss_val:.4f} | VRAM: {torch.cuda.memory_allocated()/1024**2:.0f}MB | ETA: {eta/60:.0f}min")
 
+# ── Save ────────────────────────────────────────────────
 torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/downtime/final.pt")
-print(f"Done: {step} steps", flush=True)
+elapsed = time.time() - start_time
+log("="*60)
+log(f"DONE: {step} steps in {elapsed/60:.1f} min")
+log(f"Checkpoint: checkpoints/downtime/final.pt")
+log(f"Log: {log_file}")
