@@ -68,7 +68,9 @@ log(f"Total: {len(all_convs)}")
 # Model
 import sys, torch, torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+import torch.amp
+from torch.cuda.amp import GradScaler
+autocast = torch.amp.autocast
 from tqdm import tqdm
 
 sys.path.insert(0, os.getcwd())
@@ -120,8 +122,8 @@ log(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
 
 train_ds = DS(train_samples)
 val_ds = DS(val_samples)
-train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
-val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
+val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=2, pin_memory=True)
 
 # Optimizer: lr=4e-4 with cosine + warmup
 ACCUM = 1
