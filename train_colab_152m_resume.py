@@ -71,14 +71,39 @@ cfg = FSTConfig152M()
 model = FSTNetCore(cfg)
 
 CKPT = "checkpoints/152m/best.pt"
-if os.path.exists(CKPT):
-    ck = torch.load(CKPT, map_location="cpu", weights_only=False)
-    model.load_checkpoint_into(ck["model_state"])
-    start_step = ck.get("step", 0)
-    log(f"Resumed from {CKPT} (step {start_step})")
-else:
-    start_step = 0
-    log(f"No {CKPT} found — starting from scratch")
+EXPECT_MD5 = "b20fe257f8d2643edf5e6bd879fbbd8a"  # шаг 5000, проверенный локально
+
+def load_resume(ckpt_path):
+    """Возвращает (state_dict, step) или (None, 0) с внятной ошибкой."""
+    if not os.path.exists(ckpt_path):
+        log(f"[ERROR] {ckpt_path} не найден — загрузи его в Colab перед запуском.")
+        log("       1) colab file browser (панель слева) -> Upload -> выбери локальный best.pt")
+        log("       2) перетащи в папку checkpoints/152m/ и дождись '100% uploaded'")
+        return None, 0
+    size = os.path.getsize(ckpt_path)
+    log(f"  {ckpt_path}: {size/1024**2:.0f} MB")
+    if size < 100_000_000:  # 542MB в норме; битые/пустые файлы меньше
+        log(f"[ERROR] {ckpt_path} слишком мал ({size} байт) — файл битый или обрезанный.")
+        log("       Удали его в file browser и загрузи заново (ожидаемый md5 b20fe257...).")
+        return None, 0
+    try:
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except Exception as e:
+        log(f"[ERROR] Не удалось прочитать {ckpt_path}: {e}")
+        log("        Файл повреждён. Удали в Colab и перезагрузи заново (md5 b20fe257...).")
+        return None, 0
+    if "model_state" not in ck or "step" not in ck:
+        log("[ERROR] Не похоже на FST-Net чекпоинт (нет 'model_state'/'step').")
+        return None, 0
+    return ck, ck["step"]
+
+ck, start_step = load_resume(CKPT)
+if ck is None:
+    log("=" * 60)
+    log("ОБУЧЕНИЕ ОСТАНОВЛЕНО: нужен валидный best.pt. Ничего не запускаю.")
+    sys.exit(1)
+model.load_checkpoint_into(ck["model_state"])
+log(f"Resumed from {CKPT} (step {start_step})")
 
 params = sum(p.numel() for p in model.parameters())
 log(f"Params: {params/1e6:.1f}M")
