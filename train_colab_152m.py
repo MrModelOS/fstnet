@@ -149,11 +149,17 @@ COMPUTE_DTYPE = torch.bfloat16 if USE_BF16 else torch.float16
 log(f"Compute dtype: {COMPUTE_DTYPE} (bf16={USE_BF16})")
 scaler = None if USE_BF16 else GradScaler()
 
-try:
-    model = torch.compile(model)
-    log("model = torch.compile() OK")
-except Exception as e:
-    log(f"torch.compile skip: {e}")
+# torch.compile: по умолчанию ВЫКЛЮЧЕН (на T4 фризит на динамических длинах).
+# Включить: FSTNET_COMPILE=1 python train_...
+COMPILE = os.environ.get("FSTNET_COMPILE", "").strip() not in ("", "0")
+if COMPILE:
+    try:
+        model = torch.compile(model, dynamic=True)
+        log("model = torch.compile(dynamic=True) OK (FSTNET_COMPILE=1)")
+    except Exception as e:
+        log(f"torch.compile skip: {e}")
+else:
+    log("torch.compile: off (по умолч.) — надёжнее на T4")
 
 model.train()
 step = 0
