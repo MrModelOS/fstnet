@@ -5,8 +5,11 @@ from datetime import datetime
 
 subprocess.run(["pip", "install", "-q", "transformers", "datasets", "tokenizers", "tqdm"], check=True)
 
+from colab_drive import setup_checkpoint_dir
+CKPT_DIR = setup_checkpoint_dir(subdir="152m")
+
 os.makedirs("logs", exist_ok=True)
-os.makedirs("checkpoints/152m", exist_ok=True)
+os.makedirs(CKPT_DIR, exist_ok=True)
 log_file = f"logs/train_152m_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 def log(msg):
@@ -193,11 +196,11 @@ for epoch in range(3):
             log(f"  VAL LOSS: {val_avg:.4f}")
             if val_avg < best_val:
                 best_val = val_avg
-                torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/152m/best.pt")
+                torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, os.path.join(CKPT_DIR, "best.pt"))
                 log(f"  >> Best checkpoint saved!")
             model.train()
 
-torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/152m/final.pt")
+torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, os.path.join(CKPT_DIR, "final.pt"))
 elapsed = time.time() - start_time
 log("="*60)
 log(f"DONE: {step} steps in {elapsed/60:.1f} min | Best val: {best_val:.4f}")

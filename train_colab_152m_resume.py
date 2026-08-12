@@ -12,6 +12,11 @@ import subprocess
 
 def log(msg): print(msg, flush=True)
 
+from colab_drive import setup_checkpoint_dir
+CKPT_DIR = setup_checkpoint_dir(subdir="152m")
+CKPT = os.path.join(CKPT_DIR, "best.pt")
+FINAl = os.path.join(CKPT_DIR, "final.pt")
+
 log("Installing deps...")
 subprocess.run(["pip", "install", "-q", "transformers", "datasets", "tokenizers", "tqdm"], check=True)
 os.makedirs("data", exist_ok=True)
@@ -74,7 +79,6 @@ from config_152m import FSTConfig152M
 cfg = FSTConfig152M()
 model = FSTNetCore(cfg)
 
-CKPT = "checkpoints/152m/best.pt"
 EXPECT_MD5 = "b20fe257f8d2643edf5e6bd879fbbd8a"  # шаг 5000, проверенный локально
 
 def load_resume(ckpt_path):
@@ -231,6 +235,6 @@ for epoch in range(EPOCHS):
                 log(f"  >> Best checkpoint saved (val {best_val:.4f})")
             model.train()
 
-torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, "checkpoints/152m/final.pt")
+torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, FINAl)
 log(f"Done. Final: step={step}, best_val={best_val:.4f}")
 log("Download checkpoints/152m/best.pt (and final.pt) to local machine")
