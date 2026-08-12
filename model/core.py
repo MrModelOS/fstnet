@@ -63,18 +63,16 @@ class RoPEMultiheadAttention(nn.Module):
             k = k.repeat_interleave(self.n_rep, dim=1)
             v = v.repeat_interleave(self.n_rep, dim=1)
 
-        # Attention
+        # Attention (SDPA: flash / math / mem-efficient)
         if attn_mask is not None:
             attn_mask = attn_mask.to(x.dtype).unsqueeze(0).unsqueeze(0)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        if attn_mask is not None:
-            scores = scores + attn_mask
-        probs = F.softmax(scores, dim=-1)
-        probs = self.attn_dropout(probs)
-        out = torch.matmul(probs, v)
-        out = out.transpose(1, 2).contiguous().view(B, T, -1)
-        out = self.dropout(self.wo(out))
-        return out
+        is_causal = attn_mask is None
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask if attn_mask is not None else None,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            is_causal=is_causal,
+        )
         out = out.transpose(1, 2).contiguous().view(B, T, -1)
         out = self.dropout(self.wo(out))
         return out

@@ -157,12 +157,15 @@ log(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
 
 train_ds = DS(train_samples)
 val_ds = DS(val_samples)
-train_loader = DataLoader(train_ds, batch_size=8, shuffle=True, num_workers=0, drop_last=True)
-val_loader = DataLoader(val_ds, batch_size=8, shuffle=False, num_workers=0)
+train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
+val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
-opt = torch.optim.AdamW(model.parameters(), lr=2e-4, foreach=False)
+ACCUM = 1
+BATCH = 32
+
+opt = torch.optim.AdamW(model.parameters(), lr=2e-4, foreach=False, fused=True)
 EPOCHS = 5
-total_steps = EPOCHS * len(train_ds) // (8 * 4) + start_step
+total_steps = EPOCHS * len(train_ds) // (BATCH * ACCUM) + start_step
 warmup = total_steps // 10
 
 def lr_fn(s):
@@ -172,23 +175,35 @@ def lr_fn(s):
 
 sch = torch.optim.lr_scheduler.LambdaLR(opt, lr_fn)
 crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
-scaler = GradScaler()
 
 device = "cuda"
 model = model.to(device)
+
+# bfloat16 на Ampere+, иначе fp16 (T4 не поддерживает bf16 в тензорных ядрах)
+USE_BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+COMPUTE_DTYPE = torch.bfloat16 if USE_BF16 else torch.float16
+log(f"Compute dtype: {COMPUTE_DTYPE} (bf16={USE_BF16})")
+scaler = None if USE_BF16 else GradScaler()
+
+try:
+    model = torch.compile(model)
+    log("model = torch.compile() OK")
+except Exception as e:
+    log(f"torch.compile skip: {e}")
+
 model.train()
 step = start_step
 start_time = time.time()
 best_val = float("inf")
 
-log(f"Training: {total_steps} steps, batch=8, accum=4, lr=2e-4, EPOCHS={EPOCHS}, TARGET_CYCLES=4")
+log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM}, lr=2e-4, EPOCHS={EPOCHS}, TARGET_CYCLES=4, dtype={COMPUTE_DTYPE}")
 
 for epoch in range(EPOCHS):
     pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}")
-    opt.zero_grad()
+    opt.zero_grad(set_to_none=True)
     for bx, by in pbar:
-        bx, by = bx.to(device), by.to(device)
-        with autocast(dtype=torch.float16):
+        bx, by = bx.to(device, non_blocking=True), by.to(device, non_blocking=True)
+        with autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
             h, _ = model(bx, target_cycles=4, return_hidden=True)
             ls = torch.tensor(0.0, device=device)
             nv = 0
@@ -197,16 +212,22 @@ for epoch in range(EPOCHS):
                 l = crit(model.head(h[:,s:e]).view(-1, cfg.vocab_size), by[:,s:e].reshape(-1))
                 ls += l
                 nv += (by[:,s:e] != IGNORE).sum().item()
-            loss = ls / max(nv, 1) / 4
+            loss = ls / max(nv, 1) / ACCUM
 
-        scaler.scale(loss).backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         step += 1
-        if step % 4 == 0:
-            scaler.unscale_(opt)
+        if step % ACCUM == 0:
+            if scaler is not None:
+                scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
-            opt.zero_grad()
+            if scaler is not None:
+                scaler.step(opt); scaler.update()
+            else:
+                opt.step()
+            opt.zero_grad(set_to_none=True)
             sch.step()
 
         if step % 50 == 0:
@@ -219,8 +240,8 @@ for epoch in range(EPOCHS):
             val_loss, val_n = 0.0, 0
             with torch.no_grad():
                 for vx, vy in val_loader:
-                    vx, vy = vx.to(device), vy.to(device)
-                    with autocast(dtype=torch.float16):
+                    vx, vy = vx.to(device, non_blocking=True), vy.to(device, non_blocking=True)
+                    with autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
                         h, _ = model(vx, target_cycles=4, return_hidden=True)
                         for s in range(0, SEQ, 64):
                             e = min(s+64, SEQ)
