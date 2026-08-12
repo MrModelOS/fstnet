@@ -28,9 +28,15 @@ def _in_colab():
 
 
 def mount_drive():
-    """Монтирует Google Диск в /content/drive (только в Colab)."""
+    """Монтирует Google Диск в /content/drive (только в Colab).
+
+    drive.mount() требует интерактивной авторизации через живой kernel
+    ноутбука. Из скрипта (!python) она может падать, поэтому:
+      - если Диск уже смонтирован (в т.ч. ранее) — используем как есть;
+      - при неудаче даём явную инструкцию смонтировать ячейкой и продолжить.
+    """
     if not _in_colab():
-        return "/content/drive"  # вернём строку, но она не будет использована
+        return "/content/drive"  # строка не будет использоваться
     drive_root = "/content/drive"
     if os.path.isdir(os.path.join(drive_root, "MyDrive")):
         log("Google Drive уже смонтирован.")
@@ -39,10 +45,18 @@ def mount_drive():
         from google.colab import drive
         log("Монтирую Google Диск... (разреши доступ в браузере)")
         drive.mount(drive_root)
-        log("Диск смонтирован.")
+        if os.path.isdir(os.path.join(drive_root, "MyDrive")):
+            log("Диск смонтирован.")
+            return drive_root
     except Exception as e:
         log(f"[WARN] Не удалось смонтировать Диск: {e}")
-        log("        Продолжаю с локальной папки checkpoints (веса пропадут при вылете!).")
+    log("")
+    log("=" * 60)
+    log("Google Drive НЕ подключён — чекпоинты рискуют пропасть при вылете!")
+    log("Смонтируй вручную ячейкой, останови и перезапусти скрипт:")
+    log("    from google.colab import drive; drive.mount('/content/drive')")
+    log("Затем продолжить (чекпоинты уйдут на Диск).")
+    log("=" * 60)
     return drive_root
 
 
