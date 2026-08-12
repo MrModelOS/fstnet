@@ -105,6 +105,13 @@ def convert_to_gguf(checkpoint_path, output_path, quantize=None, vocab_path=None
         if isinstance(vocab, dict):
             sorted_vocab = sorted(vocab.items(), key=lambda x: x[1])
             tokens = [t for t, _ in sorted_vocab]
+            # pad tokens to match embedding rows (vocab_size incl. specials)
+            if len(tokens) < vocab_size:
+                for extra in ("<|im_start|>", "<|im_end|>"):
+                    if extra not in tokens:
+                        tokens.append(extra)
+                while len(tokens) < vocab_size:
+                    tokens.append(f"<special_{len(tokens)}>")
             scores = [1.0] * len(tokens)
             writer.add_tokenizer_model("gpt2")
             writer.add_token_list(tokens)
