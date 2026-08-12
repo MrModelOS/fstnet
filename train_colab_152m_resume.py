@@ -228,8 +228,9 @@ val_loader = DataLoader(val_ds, batch_size=16, shuffle=False, num_workers=2, pin
 ACCUM = 2
 BATCH = 16        # физический батч; эффективный = BATCH*ACCUM = 32
 
-opt = torch.optim.AdamW(model.parameters(), lr=2e-4, foreach=False, fused=True)
-EPOCHS = 5
+opt = torch.optim.AdamW(model.parameters(), lr=LEARN_RATE, foreach=False, fused=True)
+EPOCHS = int(os.environ.get("FSTNET_EPOCHS", "5"))
+LEARN_RATE = float(os.environ.get("FSTNET_LR", "2e-4"))
 total_steps = EPOCHS * len(train_ds) // (BATCH * ACCUM) + start_step
 warmup = total_steps // 10
 
@@ -272,7 +273,7 @@ step = start_step
 start_time = time.time()
 best_val = float("inf")
 
-log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM} (eff {BATCH*ACCUM}), lr=2e-4, dtype={COMPUTE_DTYPE}")
+log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM} (eff {BATCH*ACCUM}), lr={LEARN_RATE:.1e}, EPOCHS={EPOCHS}, dtype={COMPUTE_DTYPE}")
 
 for epoch in range(EPOCHS):
     pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}")
