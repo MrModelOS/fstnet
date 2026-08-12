@@ -9,6 +9,7 @@
 """
 import os, sys, json, math, time, random
 import subprocess
+import numpy as np
 
 def log(msg): print(msg, flush=True)
 
@@ -124,9 +125,12 @@ IM_S, IM_E = "<|im_start|>", "<|im_end|>"
 PAD, IGNORE = 0, -100
 SEQ = cfg.max_seq_len
 
+NPZ = os.path.join(CKPT_DIR, "train_samples.npz")
+
 def make_samples(path):
+    """Пре-токенизация: один проход, результат — numpy-массивы (x, y)."""
     data = json.load(open(path))
-    samples = []
+    xs, ys = [], []
     for conv in data:
         ids = []
         for role, content in conv: ids += tok.encode(f"{IM_S}{role}\n{content}{IM_E}").ids
@@ -140,25 +144,39 @@ def make_samples(path):
             j = i + 1
             x.append(ids[i] if i < len(ids) else PAD)
             y.append(ids[j] if (j >= ap and j < len(ids)) else IGNORE)
-        samples.append((x, y))
-    return samples
+        xs.append(x); ys.append(y)
+    X = np.array(xs, dtype=np.int32)
+    Y = np.array(ys, dtype=np.int32)
+    return X, Y
 
 class DS(torch.utils.data.Dataset):
-    def __init__(self, s): self.s = s
-    def __len__(self): return len(self.s)
+    """Читает готовые массивы из RAM — без токенизации и пиклинга строк."""
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+    def __len__(self): return len(self.x)
     def __getitem__(self, i):
-        return torch.tensor(self.s[i][0], dtype=torch.long), torch.tensor(self.s[i][1], dtype=torch.long)
+        return torch.from_numpy(self.x[i]), torch.from_numpy(self.y[i])
 
-log("Building samples...")
-all_samples = make_samples("data/train_full.json")
-random.seed(42); random.shuffle(all_samples)
-val_split = int(len(all_samples) * 0.05)
-val_samples = all_samples[:val_split]
-train_samples = all_samples[val_split:]
-log(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
+log("Building samples (pre-tokenization)...")
+if os.path.exists(NPZ):
+    log(f"  cache found: {NPZ} — загружаю без токенизации")
+    d = np.load(NPZ)
+    X, Y = d["x"], d["y"]
+else:
+    X, Y = make_samples("data/train_full.json")
+    np.savez_compressed(NPZ, x=X, y=Y)
+    log(f"  preconditioned -> {NPZ}")
+random.seed(42)
+perm = np.random.permutation(len(X))
+X, Y = X[perm], Y[perm]
+val_split = int(len(X) * 0.05)
+val_samples_x, val_samples_y = X[:val_split], Y[:val_split]
+train_samples_x, train_samples_y = X[val_split:], Y[val_split:]
+log(f"Train: {len(train_samples_x)}, Val: {len(val_samples_x)}")
 
-train_ds = DS(train_samples)
-val_ds = DS(val_samples)
+train_ds = DS(train_samples_x, train_samples_y)
+val_ds = DS(val_samples_x, val_samples_y)
 train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, num_workers=2, pin_memory=True, persistent_workers=True, drop_last=True)
 val_loader = DataLoader(val_ds, batch_size=16, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True)
 
@@ -181,10 +199,15 @@ crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
 device = "cuda"
 model = model.to(device)
 
-# bfloat16 на Ampere+, иначе fp16 (T4 не поддерживает bf16 в тензорных ядрах)
-USE_BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+# bf16 только на Ampere+ (sm>=80: A100/L4/RTX30xx). На T4 (sm_75) bf16-тензорных
+# ядер нет — is_bf16_supported() врёт, поэтому судим по compute capability.
+if torch.cuda.is_available():
+    cap = torch.cuda.get_device_capability(torch.cuda.current_device())[0]
+else:
+    cap = 0
+USE_BF16 = cap >= 8
 COMPUTE_DTYPE = torch.bfloat16 if USE_BF16 else torch.float16
-log(f"Compute dtype: {COMPUTE_DTYPE} (bf16={USE_BF16})")
+log(f"GPU capability: sm_{cap}; Compute dtype: {COMPUTE_DTYPE}")
 scaler = None if USE_BF16 else GradScaler()
 
 # torch.compile: по умолчанию ВЫКЛЮЧЕН (на T4 фризит на динамических длинах).

@@ -143,10 +143,15 @@ crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
 device = "cuda"
 model = model.to(device)
 
-# bfloat16 на Ampere+, иначе fp16 (T4 не поддерживает bf16 в тензорных ядрах)
-USE_BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+# bf16 только на Ampere+ (sm>=80: A100/L4/RTX30xx). На T4 (sm_75) bf16-тензорных
+# ядер нет — is_bf16_supported() врёт, поэтому судим по compute capability.
+if torch.cuda.is_available():
+    cap = torch.cuda.get_device_capability(torch.cuda.current_device())[0]
+else:
+    cap = 0
+USE_BF16 = cap >= 8
 COMPUTE_DTYPE = torch.bfloat16 if USE_BF16 else torch.float16
-log(f"Compute dtype: {COMPUTE_DTYPE} (bf16={USE_BF16})")
+log(f"GPU capability: sm_{cap}; Compute dtype: {COMPUTE_DTYPE}")
 scaler = None if USE_BF16 else GradScaler()
 
 # torch.compile: по умолчанию ВЫКЛЮЧЕН (на T4 фризит на динамических длинах).
