@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""FST-Net Inference Server with MCP integration.
+"""FST-Net / JARVIS Inference Server with MCP integration.
 
 API:
   POST /v1/chat/completions — OpenAI-compatible endpoint
   POST /v1/generate — raw generation
   GET  /health
+
+Env:
+  FSTNET_MODEL=<path.pt>   чекпоинт (по умолч. checkpoints/800m/best.pt)
+  FSTNET_PORT=<port>       порт (по умолч. 8000)
 """
 import os, json, time, requests
 import torch, torch.nn as nn
@@ -16,18 +20,19 @@ from tokenizers import Tokenizer
 import uvicorn
 
 # ── Config ──────────────────────────────────────────────
-MODEL_PATH = "checkpoints/ft1024/final.pt"
+MODEL_PATH = os.environ.get("FSTNET_MODEL", "checkpoints/800m/best.pt")
 MCP_URL = "http://localhost:8765/mcp"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_NEW = 256
+PORT = int(os.environ.get("FSTNET_PORT", "8000"))
 
 # ── Load model ──────────────────────────────────────────
 print(f"Loading model from {MODEL_PATH}...", flush=True)
-from config import FSTConfig
+from config_800m import FSTConfig800M
 from model.core import FSTNetCore
 
 ckpt = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
-config = ckpt.get("config", FSTConfig())
+config = ckpt.get("config", FSTConfig800M())
 model = FSTNetCore(config)
 sd = {k: v for k, v in ckpt["model_state"].items() if "causal_mask" not in k}
 model.load_state_dict(sd, strict=False)
@@ -77,6 +82,7 @@ def mcp_insert(chat_id: str, concept: str, content: str):
 def generate(prompt_ids: List[int], max_new: int = MAX_NEW, temp: float = 0.5, top_k: int = 30) -> List[int]:
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=DEVICE)
     generated = input_ids.clone()
+    stop_tokens = {t for t in (im_end_id, eos_id) if t is not None}
 
     for _ in range(max_new):
         if generated.shape[1] > config.max_seq_len:
@@ -86,7 +92,7 @@ def generate(prompt_ids: List[int], max_new: int = MAX_NEW, temp: float = 0.5, t
 
         with torch.no_grad():
             logits, _ = model(context, target_cycles=6)
-            next_logits = logits[:, -1, :] / temp
+            next_logits = logits[:, -1, :] / max(temp, 1e-3)
 
             if top_k > 0:
                 top_vals, _ = torch.topk(next_logits, top_k)
@@ -97,7 +103,7 @@ def generate(prompt_ids: List[int], max_new: int = MAX_NEW, temp: float = 0.5, t
             next_token = torch.multinomial(probs, num_samples=1)
             generated = torch.cat([generated, next_token], dim=1)
 
-        if next_token.item() in (im_end_id, eos_id):
+        if next_token.item() in stop_tokens:
             break
 
     return generated[0, input_ids.shape[1]:].tolist()
@@ -124,14 +130,21 @@ class GenerateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model": "FST-Net 64M", "device": DEVICE}
+    return {"ok": True, "model": "JARVIS (FST-Net 800M)", "device": DEVICE}
+
+JARVIS_SYSTEM = (
+    "You are JARVIS, an ultra-competent, loyal, polite, and witty AI assistant. "
+    "You address the user as 'Sir', speak concisely, and assist with coding, system "
+    "controls, research, and self-refinement. Use <tool_call>{...}</tool_call> JSON when "
+    "an action or environment query is required; a system result will follow, then "
+    "answer the user plainly."
+)
 
 @app.post("/v1/chat/completions")
 def chat_completion(req: ChatRequest):
     t0 = time.time()
 
-    # Build prompt with optional GGM context
-    system_parts = ["You are FST-Net. Generate accurate code based on the context."]
+    system_parts = [JARVIS_SYSTEM]
     user_query = ""
 
     for msg in req.messages:
@@ -148,7 +161,7 @@ def chat_completion(req: ChatRequest):
     # Assemble ChatML prompt
     prompt_text = ""
     if ggm_context:
-        prompt_text += f"<|im_start|>system\nGGM Context from project:\n{ggm_context}<|im_end|>\n"
+        prompt_text += f"<|im_start|>system\nMemory (GGM):\n{ggm_context}<|im_end|>\n"
     prompt_text += f"<|im_start|>system\n{system_parts[-1]}<|im_end|>\n"
     prompt_text += f"<|im_start|>user\n{user_query}<|im_end|>\n"
     prompt_text += "<|im_start|>assistant\n"
@@ -162,7 +175,7 @@ def chat_completion(req: ChatRequest):
         mcp_insert(req.chat_id, user_query[:50], response[:200])
 
     return {
-        "id": f"fstnet-{int(time.time())}",
+        "id": f"jarvis-{int(time.time())}",
         "choices": [{"message": {"role": "assistant", "content": response}}],
         "usage": {"prompt_tokens": len(ids), "completion_tokens": len(out_ids)},
         "duration": time.time() - t0
@@ -171,11 +184,11 @@ def chat_completion(req: ChatRequest):
 @app.post("/v1/generate")
 def generate_endpoint(req: GenerateRequest):
     t0 = time.time()
-    prompt = f"<|im_start|>user\n{req.prompt}<|im_end|>\n<|im_start|>assistant\n"
+    prompt = f"<|im_start|>system\n{JARVIS_SYSTEM}<|im_end|>\n<|im_start|>user\n{req.prompt}<|im_end|>\n<|im_start|>assistant\n"
     ids = [bos_id] + tok.encode(prompt).ids
     out_ids = generate(ids, req.max_tokens, req.temperature)
     response = tok.decode(out_ids).strip()
     return {"response": response, "tokens": len(out_ids), "duration": time.time() - t0}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

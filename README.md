@@ -1,28 +1,23 @@
-# FST-Net 152M
+# FST-Net JARVIS
 
-Local-first AI code assistant with MCP (Model Context Protocol), GGM (Graph-Gated Memory), STDM (State-Tree Delta Memory), and ACSC (Async Self-Critique).
+Local-first autonomous AI assistant (JARVIS) on FST-Net 800M with MCP, GGM (Graph-Gated Memory), STDM (State-Tree Delta Memory), and ACSC (Async Self-Critique). Small model + external memory = deep behavior without storing the world in weights.
 
 ## Architecture
 
 ```
-IDE/OpenCode → :8000 (FST-Net Server) → :8765 (MCP)
-                                              ├─ STDM (AST delta O(1))
-                                              ├─ GGM (FAISS + MiniLM)
-                                              └─ ACSC (self-critique)
+OpenCode/Ide → :8000 (JARVIS Server) → :8765 (MCP)
+                                          ├─ STDM (AST delta, O(1) context)
+                                          ├─ GGM (FAISS + MiniLM, 300K nodes)
+                                          └─ ACSC (self-critique loop)
 ```
 
 ## Quick Start
 
-### Ollama (easiest)
+### JARVIS Server (OpenAI-compatible)
 ```bash
-ollama run fstnet "def quicksort(arr):"
-```
-
-### API Server
-```bash
-python3 fstnet_server.py
+FSTNET_MODEL=checkpoints/800m/best.pt python3 fstnet_server.py
 curl -X POST localhost:8000/v1/chat/completions \
-  -d '{"messages":[{"role":"user","content":"write fibonacci"}],"chat_id":"chat1"}'
+  -d '{"messages":[{"role":"user","content":"Sir, check the system load."}],"chat_id":"chat1"}'
 ```
 
 ### MCP Server
@@ -32,59 +27,49 @@ curl -X POST localhost:8765/mcp \
   -d '{"tool":"ggm_search","chat_id":"chat1","query":"quicksort"}'
 ```
 
-## Training (Google Colab T4)
-
-```python
-!git clone https://github.com/MrModelOS/fstnet.git
-%cd fstnet
-!pip install -q transformers datasets tokenizers tqdm
-!python3 train_colab_152m.py
-```
-
-## Model Configs
-
-| Config | Params | d_model | layers | Use case |
-|--------|--------|---------|--------|----------|
-| `config.py` | 33M | 768 | 1 | Testing |
-| `config_100m.py` | 94M | 1024 | 4 | Light |
-| `config_150m.py` | 134M | 1024 | 6 | Balanced |
-| `config_152m.py` | 151M | 1024 | 7 | **Recommended** |
-
-## Local Inference (Arch/Hyprland + Vulkan)
+## Dataset: JARVIS (synthetic, 40/25/20/15)
 
 ```bash
-# Build llama.cpp with Vulkan
-cd llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build -j
-
-# Run with Q8_0 quant
-./build/bin/llama-server -m fstnet-152m-q8.gguf -ngl 99 --ctx-size 2048 -t 4 --memory-f16
-
-# Or with nice (low CPU priority)
-nice -n 10 ionice -c 3 ./build/bin/llama-server -m fstnet-152m-q8.gguf -ngl 99
+python3 build_jarvis_data.py --count 60000
 ```
 
-## Quantization
+Mix: 40% coding · 25% reasoning/CoT · 20% tool-calling (`<tool_call>{json}</tool_call>`) · 15% persona (Sir, witty, concise). Each dialog carries the JARVIS system prompt; loss is masked to assistant turns only (multiple `<tool_call>` segments supported).
 
-| Quant | Size | Quality | Recommended |
-|-------|------|---------|-------------|
-| Q8_0 | ~160MB | ~FP16 | ✅ Yes |
-| Q5_K_M | ~100MB | Good | ⚠️ Acceptable |
-| Q4_K | ~80MB | Degraded | ❌ No |
+## Training (Google Colab)
+
+```python
+from google.colab import drive; drive.mount('/content/drive')
+%cd fstnet          # clone или git pull
+!pip install -q tokenizers tqdm
+!python3 build_jarvis_data.py --count 60000
+!FSTNET_EPOCHS=5 FSTNET_LR=3e-4 python3 train_colab_800m.py
+```
+
+Optimizations: Drive auto-mount + SSD cache (`.npz`/`.pt`), fp16 on T4 / bf16 on Ampere+, SDPA, batch 16×accum 2, optional `FSTNET_COMPILE=1`. Checkpoints always duplicated to `MyDrive/fstnet/checkpoints/800m/`.
+
+## Model Config
+
+| Config | Params | d_model | layers | ctx |
+|--------|--------|---------|--------|-----|
+| `config_800m.py` | 956M | 1536 | 24 | 2048 |
+
+## Local Inference (Arch + Vulkan)
+
+```bash
+cd llama.cpp && cmake -B build -DGGML_VULKAN=ON && cmake --build build -j
+./build/bin/llama-server -m fstnet-800m-q8.gguf -ngl 99 --ctx-size 2048 -t 4 --memory-f16
+```
+
+Quantization: Q8_0 (~547MB) recommended; Q5_K_M acceptable.
 
 ## Components
 
 - **MCP Server** (`mcp_full.py`) — session isolation, CRUD, context injection
-- **GGM** — 300K nodes, FAISS vector search, MiniLM embeddings
-- **STDM** (`stdm.py`) — AST-based delta memory, O(1) context
-- **ACSC** (`acsc.py`) — async self-critique + adversarial testing
-- **FST-Net Server** (`fstnet_server.py`) — OpenAI-compatible API
-
-## Datasets
-
-- CodeAlpaca (code generation)
-- SlimOrca (reasoning/CoT)
-- UltraChat (dialogue)
-- GSM8K (math)
+- **GGM** (`memory/ggm.py`) — FAISS vector search, MiniLM embeddings
+- **STDM** (`stdm.py`) — AST-based delta memory
+- **ACSC** (`acsc.py`) — generate → test → refine
+- **JARVIS Server** (`fstnet_server.py`) — OpenAI-compatible API + GGM injection
+- **GGUF convert** (`convert_to_gguf.py`) — checkpoint → Ollama/llama.cpp
 
 ## License
 
