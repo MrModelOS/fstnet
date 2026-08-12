@@ -125,7 +125,32 @@ IM_S, IM_E = "<|im_start|>", "<|im_end|>"
 PAD, IGNORE = 0, -100
 SEQ = cfg.max_seq_len
 
-NPZ = os.path.join(CKPT_DIR, "train_samples.npz")
+NPZ_DRIVE = os.path.join(CKPT_DIR, "train_samples.npz")   # постоянный кэш на Диске
+NPZ_LOCAL = "/content/train_samples.npz"                   # быстрый SSD Colab
+
+def pick_npz():
+    """Приоритет: локальный SSD -> Диск (копируем на SSD)."""
+    if os.path.exists(NPZ_LOCAL):
+        log(f"  local cache: {NPZ_LOCAL}")
+        return NPZ_LOCAL
+    if os.path.exists(NPZ_DRIVE):
+        log(f"  copying cache from Drive: {NPZ_DRIVE}")
+        try:
+            import shutil
+            shutil.copyfile(NPZ_DRIVE, NPZ_LOCAL)
+            return NPZ_LOCAL
+        except Exception as e:
+            log(f"  copy failed ({e}) — читаю с Диска напрямую")
+            return NPZ_DRIVE
+    return None
+
+def save_npz(X, Y):
+    """Пишем на Диск (постоянно) и в локальный SSR (быстро)."""
+    np.savez_compressed(NPZ_DRIVE, x=X, y=Y)
+    try:
+        np.savez_compressed(NPZ_LOCAL, x=X, y=Y)
+    except Exception:
+        pass
 
 def make_samples(path):
     """Пре-токенизация: один проход, результат — numpy-массивы (x, y)."""
@@ -159,14 +184,15 @@ class DS(torch.utils.data.Dataset):
         return torch.from_numpy(self.x[i]).long(), torch.from_numpy(self.y[i]).long()
 
 log("Building samples (pre-tokenization)...")
-if os.path.exists(NPZ):
-    log(f"  cache found: {NPZ} — загружаю без токенизации")
-    d = np.load(NPZ)
+_npz = pick_npz()
+if _npz:
+    log(f"  cache: {_npz} — загружаю без токенизации")
+    d = np.load(_npz)
     X, Y = d["x"], d["y"]
 else:
     X, Y = make_samples("data/train_full.json")
-    np.savez_compressed(NPZ, x=X, y=Y)
-    log(f"  preconditioned -> {NPZ}")
+    save_npz(X, Y)
+    log(f"  preconditioned -> {NPZ_DRIVE} (+ {NPZ_LOCAL})")
 random.seed(42)
 perm = np.random.permutation(len(X))
 X, Y = X[perm], Y[perm]
