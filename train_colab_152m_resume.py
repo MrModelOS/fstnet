@@ -159,11 +159,11 @@ log(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
 
 train_ds = DS(train_samples)
 val_ds = DS(val_samples)
-train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=2, pin_memory=True, drop_last=True)
-val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=2, pin_memory=True)
+train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, num_workers=2, pin_memory=True, persistent_workers=True, drop_last=True)
+val_loader = DataLoader(val_ds, batch_size=16, shuffle=False, num_workers=2, pin_memory=True, persistent_workers=True)
 
-ACCUM = 1
-BATCH = 32
+ACCUM = 2
+BATCH = 16        # физический батч; эффективный = BATCH*ACCUM = 32
 
 opt = torch.optim.AdamW(model.parameters(), lr=2e-4, foreach=False, fused=True)
 EPOCHS = 5
@@ -204,7 +204,7 @@ step = start_step
 start_time = time.time()
 best_val = float("inf")
 
-log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM}, lr=2e-4, EPOCHS={EPOCHS}, TARGET_CYCLES=4, dtype={COMPUTE_DTYPE}")
+log(f"Training: {total_steps} steps, batch={BATCH}, accum={ACCUM} (eff {BATCH*ACCUM}), lr=2e-4, dtype={COMPUTE_DTYPE}")
 
 for epoch in range(EPOCHS):
     pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}")
