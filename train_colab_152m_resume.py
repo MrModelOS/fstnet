@@ -156,7 +156,7 @@ class DS(torch.utils.data.Dataset):
         self.y = y
     def __len__(self): return len(self.x)
     def __getitem__(self, i):
-        return torch.from_numpy(self.x[i]), torch.from_numpy(self.y[i])
+        return torch.from_numpy(self.x[i]).long(), torch.from_numpy(self.y[i]).long()
 
 log("Building samples (pre-tokenization)...")
 if os.path.exists(NPZ):
