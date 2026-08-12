@@ -227,10 +227,10 @@ val_loader = DataLoader(val_ds, batch_size=16, shuffle=False, num_workers=2, pin
 
 ACCUM = 2
 BATCH = 16        # физический батч; эффективный = BATCH*ACCUM = 32
-
-opt = torch.optim.AdamW(model.parameters(), lr=LEARN_RATE, foreach=False, fused=True)
 EPOCHS = int(os.environ.get("FSTNET_EPOCHS", "5"))
 LEARN_RATE = float(os.environ.get("FSTNET_LR", "2e-4"))
+
+opt = torch.optim.AdamW(model.parameters(), lr=LEARN_RATE, foreach=False, fused=True)
 total_steps = EPOCHS * len(train_ds) // (BATCH * ACCUM) + start_step
 warmup = total_steps // 10
 
