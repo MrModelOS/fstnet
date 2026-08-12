@@ -58,6 +58,10 @@ except Exception as e: log(f"  gsm8k skip: {e}")
 
 log(f"Total convs: {len(all_convs)}")
 
+os.makedirs("data", exist_ok=True)
+with open("data/train_full.json", "w") as f: json.dump(all_convs, f)
+log("Saved data/train_full.json")
+
 import torch, torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
