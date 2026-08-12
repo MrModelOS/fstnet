@@ -15,8 +15,27 @@ def log(msg): print(msg, flush=True)
 
 from colab_drive import setup_checkpoint_dir
 CKPT_DIR = setup_checkpoint_dir(subdir="152m")
-CKPT = os.path.join(CKPT_DIR, "best.pt")
-FINAl = os.path.join(CKPT_DIR, "final.pt")
+CKPT_DRIVE = os.path.join(CKPT_DIR, "best.pt")     # постоянный best.pt на Диске
+CKPT_LOCAL = "/content/best.pt"                     # быстрый SSD Colab
+
+def pick_ckpt():
+    """Приоритет: локальный SSD -> Диск (копируем на SSD перед чтением)."""
+    import shutil
+    if os.path.exists(CKPT_LOCAL):
+        if os.path.getsize(CKPT_LOCAL) > 100_000_000:
+            log(f"  local ckpt: {CKPT_LOCAL}")
+            return CKPT_LOCAL
+        log(f"  local {CKPT_LOCAL} битый/мал — убираю")
+        os.remove(CKPT_LOCAL)
+    if os.path.exists(CKPT_DRIVE):
+        log(f"  copying best.pt c Drive -> {CKPT_LOCAL}")
+        shutil.copyfile(CKPT_DRIVE, CKPT_LOCAL)
+        return CKPT_LOCAL
+    return CKPT_DRIVE
+
+CKPT = pick_ckpt()
+FINA_L = "/content/final.pt"
+log(f"Reading checkpoint from {CKPT}")
 
 log("Installing deps...")
 subprocess.run(["pip", "install", "-q", "transformers", "datasets", "tokenizers", "tqdm"], check=True)
@@ -309,10 +328,16 @@ for epoch in range(EPOCHS):
             log(f"  VAL LOSS: {val_avg:.4f}")
             if val_avg < best_val:
                 best_val = val_avg
-                torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, CKPT)
+                state = {"step": step, "model_state": model.state_dict(), "config": cfg}
+                torch.save(state, CKPT_LOCAL)            # быстро на SSD
+                import shutil
+                shutil.copyfile(CKPT_LOCAL, CKPT_DRIVE)  # и на Диск (постоянно)
                 log(f"  >> Best checkpoint saved (val {best_val:.4f})")
             model.train()
 
-torch.save({"step": step, "model_state": model.state_dict(), "config": cfg}, FINAl)
+state = {"step": step, "model_state": model.state_dict(), "config": cfg}
+torch.save(state, FINA_L)
+import shutil
+shutil.copyfile(FINA_L, os.path.join(CKPT_DIR, "final.pt"))
 log(f"Done. Final: step={step}, best_val={best_val:.4f}")
 log("Download checkpoints/152m/best.pt (and final.pt) to local machine")
