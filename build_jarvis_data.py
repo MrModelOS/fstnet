@@ -1,4 +1,9 @@
-"""Синтетический датасет JARVIS для FST-Net 800M (tool-calling + персона + CoT + код).
+"""Синтетический датасет JARVIS для FST-Net (MoF 3B / 800M) (tool-calling + персона + CoT + код).
+
+Формат траекторий (3B 1-bit MoF, SPEC_3B_MOF.md):
+  thinking пошаговый CoT 
+  <tool_call>{"name": "...", "args": {...}}</tool_call>
+  Ответ Сэр: ...
 
 Пропорция (по рекомендации):
   40%  — кодинг (генерация/исправление кода, скрипты)
@@ -8,7 +13,7 @@
 
 Выход: data/jarvis_full.json  = [[ (role, content), ... ]]  — читается make_samples()
 
-Запуск:  python3 build_jarvis_data.py  --count 60000
+Запуск:  python3 build_jarvis_data.py  --count 200000
 Env-перезапись: JARVIS_COUNT, JARVIS_SEED
 """
 import os
@@ -84,8 +89,10 @@ def code_sample(rng):
              f"Add a CLI entry point that {task}.",
              f"Fix the bug in this snippet:\n{snippet}"]
     prompt = rng.choice(kinds)
+    think = ("<think>Approach: decompose the request, pick the cleanest implementation, "
+             "then verify edge cases.</think>\n") if rng.random() < 0.4 else ""
     return (SYSTEM_PROMPT, prompt, None,
-            f"Certainly, Sir. Here is the code:\n```python\ndef {fn}():\n    # {task}\n    pass\n```\n"
+            f"{think}Certainly, Sir. Here is the code:\n```python\ndef {fn}():\n    # {task}\n    pass\n```\n"
             f"Let me know if you need me to wire it into a module or run it.")
 
 # ---------- ЛОГИКА / CoT (25%) ----------
@@ -113,8 +120,8 @@ def reasoning_sample(rng):
         q, ans, steps = rng.choice(MATH_QS)
     else:
         q, ans, steps = rng.choice(REASON_QS)
-    cot = (f"<reasoning>Let me think through this carefully, Sir. {steps}\n"
-           f"Therefore the answer is: {ans}.<done>\n")
+    cot = (f"<think>Let me think this through carefully, Sir. {steps}\n"
+           f"Therefore the answer is: {ans}.</think>\n")
     return (SYSTEM_PROMPT, q, None, f"{cot}The answer is {ans}, Sir.")
 
 # ---------- TOOL CALLING (20%) ----------
@@ -190,7 +197,7 @@ BUILDERS = {"code": code_sample, "reason": reasoning_sample, "tool": tool_sample
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--count", type=int, default=int(os.environ.get("JARVIS_COUNT", "60000")))
+    ap.add_argument("--count", type=int, default=int(os.environ.get("JARVIS_COUNT", "200000")))
     ap.add_argument("--seed", type=int, default=int(os.environ.get("JARVIS_SEED", "42")))
     ap.add_argument("--out", default="data/jarvis_full.json")
     args = ap.parse_args()
