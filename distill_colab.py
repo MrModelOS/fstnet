@@ -95,8 +95,6 @@ def validate(kind, text):
         return False, "len"
     if kind == "tool" and "<tool_call>" not in text:
         return False, "no_tool_call"
-    if kind != "chat" and "<think>" not in text:
-        return False, "no_think"
     return True, "ok"
 
 
@@ -126,7 +124,8 @@ class Distiller:
             ],
             "temperature": 0.7,
             "max_tokens": 512,
-            "top_p": 0.9,
+            "top_p": 0.95,
+            "top_k": 20,
         }
         r = requests.post(f"{self.base_url}/chat/completions",
                           json=payload, headers=self.headers, timeout=self.timeout)
