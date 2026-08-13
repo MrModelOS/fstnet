@@ -46,11 +46,12 @@ log(f"STAGE={STAGE}")
 from colab_drive import setup_checkpoint_dir
 STAGE1_SUBDIR = "3b_mof"
 CKPT_DIR = setup_checkpoint_dir(subdir=STAGE1_SUBDIR if STAGE == 1 else "3b_mof_stage2")
+CONTENT = "/content" if os.path.isdir("/content") else CKPT_DIR
 CKPT_DRIVE = os.path.join(CKPT_DIR, "moF_best.pt")
-CKPT_LOCAL = f"/content/best_3b_mof{'' if STAGE == 1 else '_stage2'}.pt"
-FINAl_LOCAL = f"/content/final_3b_mof{'' if STAGE == 1 else '_stage2'}.pt"
+CKPT_LOCAL = os.path.join(CONTENT, f"best_3b_mof{'' if STAGE == 1 else '_stage2'}.pt")
+FINAl_LOCAL = os.path.join(CONTENT, f"final_3b_mof{'' if STAGE == 1 else '_stage2'}.pt")
 CACHE_DRIVE = os.path.join(CKPT_DIR, "jarvis_mof_samples.npz")
-CACHE_LOCAL = f"/content/jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}.npz"
+CACHE_LOCAL = os.path.join(CONTENT, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}.npz")
 
 
 def pick_source(drive_path, local_path):
@@ -96,7 +97,7 @@ start_step = 0
 if STAGE == 2:
     stage1_dir = setup_checkpoint_dir(subdir=STAGE1_SUBDIR)
     src = pick_source(os.path.join(stage1_dir, "moF_best.pt"),
-                      "/content/best_3b_mof.pt")
+                      os.path.join(CONTENT, "best_3b_mof.pt"))
     if not src:
         log("[FAIL] Stage 2 требует чекпоинт Stage 1 (checkpoints/3b_mof/moF_best.pt). "
             "Сначала обучай Stage 1.")
