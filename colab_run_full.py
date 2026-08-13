@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
 """Полный авто-запуск обучения JARVIS (Stage 1 + Stage 2) в Colab.
 
-Одна ячейка (копируй целиком):
-  !git clone -q https://github.com/MrModelOS/fstnet.git /content/fstnet && cd /content/fstnet && python colab_run_full.py
+Одна ячейка (копируй целиком; работает и при повторном запуске):
+  !wget -q https://raw.githubusercontent.com/MrModelOS/fstnet/master/colab_run_full.py && python colab_run_full.py
 
 Что делает скрипт:
   1. Монтирует Google Диск (нужно разрешить в браузере; если нет — продолжает локально).
-  2. Обеспечивает репозиторий в /content/fstnet (git pull, если уже есть).
+  2. Обеспечивает репозиторий в /content/fstnet: git clone, если нет; git pull, если есть.
   3. Ставит зависимости (tokenizers, tqdm, ijson; datasets — только для OpenHermes).
   4. Датасеты data/jarvis_full.json (Stage 1) и data/jarvis_special.json (Stage 2):
        локально есть -> берём; нет -> копируем с Диска MyDrive/fstnet/data/;
        нет нигде -> собираем (синтетика + OpenHermes для Stage 1, синтетика 500K для Stage 2);
        после обеспечения — синхронизируем на Диск (следующие запуски без сборки).
-  5. Stage 1:  FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python train_colab_mof.py
-               -> checkpoints/3b_mof/moF_best.pt (локально и на Диске).
-  6. Stage 2:  FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json python train_colab_mof.py
-               -> checkpoints/3b_mof_stage2/.
-  7. Лог прогона -> Диск: MyDrive/fstnet/logs/run_<ts>.log.
+  5. Автопродолжение: обучение возобновляется с последнего чекпоинта (локально или на Диске);
+     уже завершённая стадия (final.pt есть) пропускается:
+       Stage 1:  FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python train_colab_mof.py
+                 -> checkpoints/3b_mof/moF_best.pt (локально и на Диске).
+       Stage 2:  FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json python train_colab_mof.py
+                 -> checkpoints/3b_mof_stage2/.
+  6. Лог прогона -> Диск: MyDrive/fstnet/logs/run_<ts>.log.
 
 Флаги:
   --stage1-only   только Stage 1
   --skip-data     не трогать датасеты (обучение на том, что уже в data/)
-  --fresh         удалить локальные чекпоинты/кэши перед стартом (Диск не трогаем)
+  --fresh         удалить чекпоинты (локально и на Диске) — чистый старт
 
 Env-перезапись (передаются в обучение): RUN_EPOCHS (4), RUN_LR (2e-4),
 JARVIS_COUNT (200K синтетики Stage 1), JARVIS_COUNT_SPEC (500K Stage 2),
@@ -218,32 +220,52 @@ def main():
         log(f"Stage 2 датасет: {jarvis_special}")
 
     # ---------- Stage 1 ----------
-    log("\n########## STAGE 1 (общая база, W0 float->1bit) ##########")
-    rc1 = run(["python", "train_colab_mof.py"], train_env({"FSTNET_DATA": "data/jarvis_full.json"}), logf)
-    if rc1 != 0:
-        log("[FAIL] Stage 1 упал. Смотри лог выше. Stage 2 пропущен.")
-        sync_file(os.path.join(LOG_DIR, f"run_{ts}.log"),
-                  os.path.join(DRIVE_LOG, f"run_{ts}.log"))
-        sys.exit(1)
+    def has_ckpt(subdir, name):
+        return (os.path.exists(os.path.join(SKILL, "checkpoints", subdir, name))
+                or (drive_mounted()
+                    and os.path.exists(os.path.join(DRIVE_CKPT, subdir, name))))
 
-    # Stage 2 требует moF_best.pt в checkpoints/3b_mof/ (локально + Диск)
-    stage1_best = os.path.join(SKILL, "checkpoints", "3b_mof", "moF_best.pt")
-    stage1_final = os.path.join(SKILL, "checkpoints", "3b_mof", "final.pt")
-    if not os.path.exists(stage1_best) and os.path.exists(stage1_final):
-        log("moF_best.pt нет (валидация не успела сохранить) — беру final.pt.")
-        shutil.copyfile(stage1_final, stage1_best)
-        sync_file(stage1_best, os.path.join(DRIVE_CKPT, "3b_mof", "moF_best.pt"))
+    def ensure_stage1_best():
+        """Stage 2 требует moF_best.pt в checkpoints/3b_mof/ (локально + Диск)."""
+        best = os.path.join(SKILL, "checkpoints", "3b_mof", "moF_best.pt")
+        if not os.path.exists(best):
+            os.makedirs(os.path.dirname(best), exist_ok=True)
+            for cand in (os.path.join(SKILL, "checkpoints", "3b_mof", "final.pt"),
+                         os.path.join(DRIVE_CKPT, "3b_mof", "final.pt")):
+                if os.path.exists(cand):
+                    shutil.copyfile(cand, best)
+                    log("moF_best.pt нет (валидация не успела сохранить) — беру final.pt.")
+                    break
+        sync_file(best, os.path.join(DRIVE_CKPT, "3b_mof", "moF_best.pt"))
+
+    if has_ckpt("3b_mof", "final.pt"):
+        log("Stage 1 уже завершён (final.pt есть) — пропускаю обучение Stage 1.")
+    else:
+        log("\n########## STAGE 1 (общая база, W0 float->1bit) ##########")
+        rc1 = run(["python", "train_colab_mof.py"], train_env({"FSTNET_DATA": "data/jarvis_full.json"}), logf)
+        if rc1 != 0:
+            log("[FAIL] Stage 1 упал. Смотри лог выше. Stage 2 пропущен.")
+            sync_file(os.path.join(LOG_DIR, f"run_{ts}.log"),
+                      os.path.join(DRIVE_LOG, f"run_{ts}.log"))
+            sys.exit(1)
+        ensure_stage1_best()
 
     if args.stage1_only:
         log("--stage1-only: Stage 2 пропущен.")
+    elif has_ckpt("3b_mof_stage2", "final.pt"):
+        log("Stage 2 уже завершён (final.pt есть) — пропускаю обучение Stage 2.")
     else:
         # ---------- Stage 2 ----------
-        log("\n########## STAGE 2 (спец. датасет, W0 frozen, L_orth) ##########")
-        rc2 = run(["python", "train_colab_mof.py"],
-                  train_env({"FSTNET_STAGE": "2",
-                             "FSTNET_DATA": "data/jarvis_special.json"}), logf)
-        if rc2 != 0:
-            log("[FAIL] Stage 2 упал. Смотри лог выше.")
+        if not (has_ckpt("3b_mof", "moF_best.pt") or has_ckpt("3b_mof", "final.pt")):
+            log("[FAIL] Нет чекпоинта Stage 1 (3b_mof/moF_best.pt) — Stage 2 невозможен.")
+        else:
+            ensure_stage1_best()
+            log("\n########## STAGE 2 (спец. датасет, W0 frozen, L_orth) ##########")
+            rc2 = run(["python", "train_colab_mof.py"],
+                      train_env({"FSTNET_STAGE": "2",
+                                 "FSTNET_DATA": "data/jarvis_special.json"}), logf)
+            if rc2 != 0:
+                log("[FAIL] Stage 2 упал. Смотри лог выше.")
 
     sync_file(os.path.join(LOG_DIR, f"run_{ts}.log"), os.path.join(DRIVE_LOG, f"run_{ts}.log"))
     log("\n" + "=" * 60)
