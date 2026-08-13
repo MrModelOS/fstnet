@@ -61,13 +61,15 @@ def make_checkpoints():
     local = os.path.join(SKILL_DIR, "checkpoints")
     os.makedirs(os.path.join(local, "152m"), exist_ok=True)
     os.makedirs(os.path.join(local, "800m"), exist_ok=True)
-    log(f"Каталоги локально: {local}/{{152m,800m}}")
+    os.makedirs(os.path.join(local, "3b_mof"), exist_ok=True)
+    log(f"Каталоги локально: {local}/{{152m,800m,3b_mof}}")
 
     drive_ckpt = "/content/drive/MyDrive/fstnet/checkpoints"
     if os.path.isdir("/content/drive/MyDrive"):
         os.makedirs(os.path.join(drive_ckpt, "152m"), exist_ok=True)
         os.makedirs(os.path.join(drive_ckpt, "800m"), exist_ok=True)
-        log(f"Каталоги на Диске: {drive_ckpt}/{{152m,800m}}")
+        os.makedirs(os.path.join(drive_ckpt, "3b_mof"), exist_ok=True)
+        log(f"Каталоги на Диске: {drive_ckpt}/{{152m,800m,3b_mof}}")
     return local, (drive_ckpt if os.path.isdir("/content/drive/MyDrive") else None)
 
 

@@ -13,8 +13,13 @@
   from google.colab import drive; drive.mount('/content/drive')
   %cd fstnet
   !pip install -q tokenizers tqdm
-  !python build_jarvis_data.py --count 200000
+  # 1) датасет: дистилляция с учителя (Qwen 27B 1-bit, llama.cpp server :8001)
+  !python distill_colab.py --count 200000 --workers 8
+  !python distill_colab.py --to-json --synthetic 40000
+  # 2) обучение
   !FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python train_colab_mof.py
+  # 3) проверка
+  !python eval_mof.py --ckpt checkpoints/3b_mof/best.pt --val --gen 10
 """
 import os
 import sys

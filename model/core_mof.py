@@ -227,6 +227,27 @@ class FSTMoFModel(nn.Module):
             if isinstance(m, BitLinear):
                 m.binarize = ratio
 
+    @torch.no_grad()
+    def generate(self, idx, max_new=128, temperature=0.8, top_k=50, top_p=0.9):
+        self.eval()
+        device = idx.device
+        for _ in range(max_new):
+            logits, _ = self(idx[:, -(self.cfg.max_seq_len):])
+            logits = logits[:, -1, :] / max(temperature, 1e-6)
+            if top_k > 0:
+                v, _ = logits.topk(min(top_k, logits.size(-1)))
+                logits[logits < v[:, -1:]] = float("-inf")
+            if top_p < 1.0:
+                sorted_l, indices = torch.sort(logits, descending=True)
+                cum = torch.cumsum(F.softmax(sorted_l, dim=-1), dim=-1)
+                cutoff = cum - F.softmax(sorted_l, dim=-1) > top_p
+                sorted_l[cutoff] = float("-inf")
+                logits = torch.zeros_like(logits).scatter_(1, indices, sorted_l)
+            probs = F.softmax(logits, dim=-1)
+            nxt = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, nxt], dim=1)
+        return idx
+
 
 if __name__ == "__main__":
     cfg = FSTMoFConfig()
