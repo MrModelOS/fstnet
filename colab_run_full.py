@@ -2,7 +2,14 @@
 """Полный авто-запуск обучения JARVIS (Stage 1 + Stage 2) в Colab.
 
 Одна ячейка (копируй целиком; работает и при повторном запуске):
-  !wget -q https://raw.githubusercontent.com/MrModelOS/fstnet/master/colab_run_full.py && python colab_run_full.py
+  !wget -q https://raw.githubusercontent.com/MrModelOS/fstnet/master/colab_run_full.py
+  %run colab_run_full.py
+
+Важно: запускай через %run (не !python) — тогда монтирование Диска выполняется
+в ядре ноутбука и покажет ссылку авторизации прямо в ячейке. Из !python
+drive.mount() не работает (нет ядра). Если Диск не смонтирован — скрипт
+продолжит локально, а после можно смонтировать ячейкой и перезапустить
+(обучение продолжится с чекпоинта).
 
 Что делает скрипт:
   1. Монтирует Google Диск (нужно разрешить в браузере; если нет — продолжает локально).
@@ -82,18 +89,26 @@ def mount_drive():
         log("=" * 60)
         log("Диск НЕ подключён. Чекпоинты останутся только в /content и "
             "пропадут при вылете рантайма!")
-        log("Смонтируй ячейкой и перезапусти:")
-        log("    from google.colab import drive; drive.mount('/content/drive')")
+        log("Варианты:")
+        log("  1. Запускай скрипт через %run (не !python) — тогда mount")
+        log("     отработает и покажет ссылку авторизации прямо в ячейке.")
+        log("  2. Смонтируй отдельной ячейкой:")
+        log("       from google.colab import drive; drive.mount('/content/drive')")
+        log("     и перезапусти скрипт — обучение продолжится с чекпоинта.")
         log("=" * 60)
 
 
 def ensure_repo():
-    if not os.path.isdir(os.path.join(SKILL, ".git")):
-        log(f"Клонирую репозиторий: {REPO}")
-        subprocess.run(["git", "clone", "-q", REPO, SKILL], check=True)
-    else:
+    if os.path.isdir(os.path.join(SKILL, ".git")):
         log("Репозиторий уже есть — git pull.")
         subprocess.run(["git", "-C", SKILL, "pull", "--ff-only", "-q"], check=False)
+    else:
+        if os.path.isdir(SKILL):
+            stale = f"{SKILL}.stale.{int(time.time())}"
+            os.rename(SKILL, stale)
+            log(f"{SKILL} существует, но не git-репозиторий — убрал в {stale}")
+        log(f"Клонирую репозиторий: {REPO}")
+        subprocess.run(["git", "clone", "-q", REPO, SKILL], check=True)
     os.chdir(SKILL)
     sys.path.insert(0, SKILL)
     log(f"CWD: {os.getcwd()}")
@@ -155,7 +170,8 @@ def train_env(extra):
     env = dict(os.environ)
     env.setdefault("FSTNET_EPOCHS", str(EPOCHS))
     env.setdefault("FSTNET_LR", LR)
-    env.setdefault("FSTNET_CKPT_DIR", DRIVE_CKPT)
+    if drive_mounted():
+        env.setdefault("FSTNET_CKPT_DIR", DRIVE_CKPT)
     env.update(extra)
     return env
 
@@ -274,6 +290,11 @@ def main():
     log(f"  датасеты:  {DRIVE_DATA}/")
     log(f"  лог:       {DRIVE_LOG}/run_{ts}.log")
     log("Следующее: S3 — 1-bit export + bitnet.cpp (см. SPEC_3B_MOF.md).")
+    if not drive_mounted():
+        log("")
+        log("ВНИМАНИЕ: Диск не был смонтирован — артефакты остались только в /content.")
+        log("Смонтируй ячейкой: from google.colab import drive; drive.mount('/content/drive')")
+        log("и перезапусти скрипт — он докачает чекпоинты на Диск (resume).")
     log("=" * 60)
 
 
