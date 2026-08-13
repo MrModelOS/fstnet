@@ -73,7 +73,9 @@ Active/токен (base + top-GS/32 полей):
 ## 2. Пайплайн данных и дистилляция (Data & Teacher)
 
 ### 2.1 Учитель
-- **Qwen 3.6 27B Bonsai (1-bit)** — vLLM / llama.cpp server на Colab T4 / Kaggle P100 (~3.5GB VRAM)
+- **Qwen 27B 1-bit (Bonsai)** — llama.cpp server в Colab через `run_teacher_colab.py` (~3.5GB VRAM на T4)
+- Источник модели: `--gguf-url`, `--hf-repo+--hf-file` или `--local-gguf` (env `TEACHER_*`)
+- OpenAI-совместимый `/v1/chat/completions` на :8001 → его ест `distill_colab.py`
 - Только генерация (offline), не фиксируется в артефактах
 
 ### 2.2 Датасет
