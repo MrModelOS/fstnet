@@ -16,10 +16,13 @@
   # 1) датасет: дистилляция с учителя (Qwen 27B 1-bit, llama.cpp server :8001)
   !python distill_colab.py --count 200000 --workers 8
   !python distill_colab.py --to-json --synthetic 40000
-  # 2) обучение
+  # 2) обучение Stage 1 (общая база) -> чекпоинт checkpoints/3b_mof/moF_best.pt
   !FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python train_colab_mof.py
-  # 3) проверка
-  !python eval_mof.py --ckpt checkpoints/3b_mof/best.pt --val --gen 10
+  # 3) обучение Stage 2 (спец. датасет, W0 заморожен, L_orth всегда)
+  #    грузит 3b_mof/moF_best.pt, сохраняет в checkpoints/3b_mof_stage2/
+  !FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json FSTNET_EPOCHS=4 python train_colab_mof.py
+  # 4) проверка
+  !python eval_mof.py --ckpt checkpoints/3b_mof_stage2/best.pt --val --gen 10
 """
 import os
 import sys
@@ -35,13 +38,19 @@ def log(msg): print(msg, flush=True)
 
 sys.path.insert(0, os.getcwd())
 
+STAGE = int(os.environ.get("FSTNET_STAGE", "1"))
+if STAGE not in (1, 2):
+    raise ValueError("FSTNET_STAGE должен быть 1 или 2")
+log(f"STAGE={STAGE}")
+
 from colab_drive import setup_checkpoint_dir
-CKPT_DIR = setup_checkpoint_dir(subdir="3b_mof")
+STAGE1_SUBDIR = "3b_mof"
+CKPT_DIR = setup_checkpoint_dir(subdir=STAGE1_SUBDIR if STAGE == 1 else "3b_mof_stage2")
 CKPT_DRIVE = os.path.join(CKPT_DIR, "moF_best.pt")
-CKPT_LOCAL = "/content/best_3b_mof.pt"
-FINAl_LOCAL = "/content/final_3b_mof.pt"
+CKPT_LOCAL = f"/content/best_3b_mof{'' if STAGE == 1 else '_stage2'}.pt"
+FINAl_LOCAL = f"/content/final_3b_mof{'' if STAGE == 1 else '_stage2'}.pt"
 CACHE_DRIVE = os.path.join(CKPT_DIR, "jarvis_mof_samples.npz")
-CACHE_LOCAL = "/content/jarvis_mof_samples.npz"
+CACHE_LOCAL = f"/content/jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}.npz"
 
 
 def pick_source(drive_path, local_path):
@@ -59,7 +68,9 @@ def pick_source(drive_path, local_path):
 
 
 log("Installing deps...")
-subprocess.run(["pip", "install", "-q", "tokenizers", "tqdm"], check=True)
+subprocess.run(["pip", "install", "-q", "tokenizers", "tqdm",
+                "--break-system-packages"],
+               check=False)
 
 import torch
 import torch.nn as nn
@@ -73,10 +84,25 @@ from model.core_mof import FSTMoFModel
 from tokenizers import Tokenizer
 
 cfg = FSTMoFConfig()
+for k in ("vocab_size", "dim", "n_layers", "n_heads", "n_kv_heads", "d_ff",
+          "n_fields", "field_rank", "gating_top_k", "max_seq_len", "hidden_alpha"):
+    v = os.environ.get(f"FSTNET_{k.upper()}", "").strip()
+    if v:
+        setattr(cfg, k, int(v))
+        log(f"env override: {k}={v}")
 model = FSTMoFModel(cfg)
 
-src = pick_source(CKPT_DRIVE, CKPT_LOCAL)
 start_step = 0
+if STAGE == 2:
+    stage1_dir = setup_checkpoint_dir(subdir=STAGE1_SUBDIR)
+    src = pick_source(os.path.join(stage1_dir, "moF_best.pt"),
+                      "/content/best_3b_mof.pt")
+    if not src:
+        log("[FAIL] Stage 2 требует чекпоинт Stage 1 (checkpoints/3b_mof/moF_best.pt). "
+            "Сначала обучай Stage 1.")
+        sys.exit(1)
+else:
+    src = pick_source(CKPT_DRIVE, CKPT_LOCAL)
 if src:
     ck = torch.load(src, map_location="cpu", weights_only=False)
     model.load_state_dict(ck["model_state"])
@@ -140,7 +166,7 @@ if npz:
     X, Y = d["x"], d["y"]
     log(f"  cache: {npz}")
 else:
-    X, Y = make_samples("data/jarvis_full.json", cfg.max_seq_len)
+    X, Y = make_samples(os.environ.get("FSTNET_DATA", "data/jarvis_full.json"), cfg.max_seq_len)
     np.savez_compressed(CACHE_DRIVE, x=X, y=Y)
     try:
         np.savez_compressed(CACHE_LOCAL, x=X, y=Y)
@@ -161,20 +187,27 @@ train_ds = DS(tr_x, tr_y)
 val_ds = DS(val_x, val_y)
 BATCH = int(os.environ.get("FSTNET_BATCH", "8"))
 ACCUM = int(os.environ.get("FSTNET_ACCUM", "8"))
+WORKERS = int(os.environ.get("FSTNET_WORKERS", "0"))
 train_loader = torch.utils.data.DataLoader(
-    train_ds, batch_size=BATCH, shuffle=True, num_workers=2,
-    pin_memory=True, persistent_workers=True, drop_last=True)
+    train_ds, batch_size=BATCH, shuffle=True, num_workers=WORKERS,
+    pin_memory=False, persistent_workers=WORKERS > 0, drop_last=True)
 val_loader = torch.utils.data.DataLoader(
-    val_ds, batch_size=BATCH, shuffle=False, num_workers=2,
-    pin_memory=True, persistent_workers=True)
+    val_ds, batch_size=BATCH, shuffle=False, num_workers=WORKERS,
+    pin_memory=False, persistent_workers=WORKERS > 0)
 
 EPOCHS = int(os.environ.get("FSTNET_EPOCHS", "4"))
 LEARN_RATE = float(os.environ.get("FSTNET_LR", "2e-4"))
-total_steps = EPOCHS * len(tr_x) // (BATCH * ACCUM) + start_step
+step0 = start_step if STAGE == 1 else 0
+total_steps = EPOCHS * len(tr_x) // (BATCH * ACCUM) + step0
 warmup = max(total_steps // 100, 50)
 
-opt = torch.optim.AdamW(model.parameters(), lr=LEARN_RATE, foreach=False, fused=True)
 all_names = [n for n, _ in model.named_parameters()]
+W0_NAMES = [n for n in all_names if ".W0" in n]
+FIELD_NAMES = [n for n in all_names if ".Fg." in n or ".Fu." in n or ".Fd." in n or ".hyper." in n]
+
+opt_params = ([p for n, p in model.named_parameters() if n in FIELD_NAMES]
+              if STAGE == 2 else list(model.parameters()))
+opt = torch.optim.AdamW(opt_params, lr=LEARN_RATE, foreach=False, fused=True)
 
 def lr_fn(s):
     if s < warmup: return (s + 1) / warmup
@@ -200,26 +233,21 @@ if os.environ.get("FSTNET_COMPILE", "").strip() not in ("", "0"):
     except Exception as e:
         log(f"compile skip: {e}")
 
-W0_NAMES = [n for n in all_names if ".W0" in n]
-grad_checkpoints = {}
-
-
 def apply_phase(p, freeze_w0):
-    model.set_binarize(min(1.0, max(0.0, (p - 0.15) / 0.45)))
+    ratio = 1.0 if STAGE == 2 else min(1.0, max(0.0, (p - 0.15) / 0.45))
+    model.set_binarize(ratio)
+    for name, d in model.named_parameters():
+        if STAGE == 2:
+            d.requires_grad_(name in FIELD_NAMES)
+        else:
+            d.requires_grad_(not freeze_w0 or name not in W0_NAMES)
     for m in model.modules():
-        if isinstance(m, torch.nn.Linear):
-            m.requires_grad_(True)
-    for name in W0_NAMES:
-        d = dict(model.named_parameters())[name]
-        d.requires_grad_(not freeze_w0)
-    if p >= 0.5:
-        for m in model.modules():
-            if hasattr(m, "quant_in"):
-                m.quant_in = True
+        if hasattr(m, "quant_in"):
+            m.quant_in = STAGE == 2 or p >= 0.5
 
 
 SEQ = cfg.max_seq_len
-step = start_step
+step = step0
 t0 = time.time()
 best_val = float("inf")
 apply_phase(step / max(1, total_steps), freeze_w0=False)
@@ -240,8 +268,9 @@ for epoch in range(EPOCHS):
         with autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
             logits, ce = model(bx, by)
             ls = ce
-            orth = model.orth_loss()
-            loss = ls + cfg.orth_scale * orth if p > 0.6 else ls
+            use_orth = STAGE == 2 or p > 0.6
+            orth = model.orth_loss() if use_orth else None
+            loss = ls + cfg.orth_scale * orth if use_orth else ls
             loss = loss / ACCUM
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -261,10 +290,10 @@ for epoch in range(EPOCHS):
 
         if step % 50 == 0:
             el = time.time() - t0
-            eta = el / max(step - start_step, 1) * (total_steps - step)
+            eta = el / max(step - step0, 1) * (total_steps - step)
             curr_ratio = model.blocks[0].ffn.W0g.binarize
             log(f"Step {step}/{total_steps} | CE {ce.item():.4f}"
-                f"{' ORTH ' + f'{orth.item():.4f}' if p > 0.6 else ''} | "
+                f"{' ORTH ' + f'{orth.item():.4f}' if use_orth else ''} | "
                 f"β {curr_ratio:.2f} | LR {sch.get_last_lr()[0]:.2e} | "
                 f"VRAM {torch.cuda.memory_allocated()/1024**2:.0f}MB | ETA {eta/60:.0f}min")
 
