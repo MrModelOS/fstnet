@@ -36,8 +36,11 @@
 ## Roadmap
 
 - [x] **Фаза 1**: trainer в `jarvis_engine/trainer/`; запуск S0/S1 в Colab — `python jarvis_engine/trainer/run_trainer.py`
-- [ ] **Фаза 2** (параллельно с Colab, T4): `runtime/`: paged_kv.py → sampler.py (grammar) → bit_kernels.cu → mcp_server.py
-- [ ] **Фаза 3**: JS-инференс 1-bit чекпоинта через runtime; интеграция GGM-памяти.
+- [x] **Фаза 2 (runtime)**: `jarvis_engine/runtime/`:
+  - `paged_kv.py` — страничный KV-кэш + инкрементальный `ModelPagedRunner` (prefill+decode, RoPE, INT8-квант); fp16-совпадение с полным пересчётом ~6e-6 (проверено)
+  - `sampler.py` — temperature/top-k/top-p/min-p/rep-penalty + JSON grammar-mask
+  - `mcp_server.py` — нативный IPC (HTTP+UDS): GGM-подмес + paged-KV генерация + grammar
+- [ ] **Фаза 3**: `bit_kernels.cu` — CUDA 1-bit W1A8 (XOR/POPCNT) + Field Synthesizer; интеграция в ModelPagedRunner; проверка T4.
 
 ### Запуск тренировки (Colab)
 
