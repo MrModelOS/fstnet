@@ -211,19 +211,19 @@ def main():
     else:
         def build_stage1():
             log("Собираю jarvis_full: синтетика 200K + OpenHermes 300K + merge.")
-            run(["python", "build_jarvis_data.py", "--count", "200000"],
+            run(["python", "brain/build_jarvis_data.py", "--count", "200000"],
                 dict(os.environ), logf, timeout=2400)
-            if run(["python", "fetch_openhermes.py", "--max-examples", "300000",
+            if run(["python", "brain/fetch_openhermes.py", "--max-examples", "300000",
                     "--min-tokens", "50"], dict(os.environ), logf, timeout=3600) == 0 \
                     and os.path.exists(os.path.join(DATA, "jarvis_openhermes.json")):
-                run(["python", "merge_datasets.py", "--weight", "0.7"],
+                run(["python", "brain/merge_datasets.py", "--weight", "0.7"],
                     dict(os.environ), logf)
             else:
                 log("[WARN] OpenHermes не получен — Stage 1 на синтетике 200K.")
 
         def build_stage2():
             log("Собираю jarvis_special: синтетика 500K (Bash/tool-calling/Synth-Math).")
-            run(["python", "build_specialized.py", "--count", "500000"],
+            run(["python", "brain/build_specialized.py", "--count", "500000"],
                 dict(os.environ), logf, timeout=1800)
 
         jarvis_full = ensure_data("jarvis_full.json",
