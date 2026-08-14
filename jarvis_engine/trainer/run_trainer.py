@@ -338,6 +338,7 @@ train_loader = torch.utils.data.DataLoader(
 val_loader = torch.utils.data.DataLoader(
     val_ds, batch_size=BATCH, shuffle=False, num_workers=WORKERS,
     pin_memory=False, persistent_workers=WORKERS > 0)
+VAL_MAX = int(os.environ.get("FSTNET_VAL_MAX", "512"))   # сэмпл валидации, а не все 15k (экономия часов)
 
 EPOCHS = int(os.environ.get("FSTNET_EPOCHS", "1"))
 LEARN_RATE = float(os.environ.get("FSTNET_LR", "2e-4"))
@@ -429,18 +430,23 @@ for epoch in range(EPOCHS):
                 f"{mm.report()} | ETA {eta/60:.0f}min")
 
         if step % 500 == 0:
+            state = {"step": step, "model_state": model.state_dict(), "config": cfg}
+            torch.save(state, CKPT_LOCAL)
+            uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
+            log(f"  >> autosave (step {step})")
             model.eval()
             vl, vn = 0.0, 0
             with torch.no_grad():
-                for vx, vy in val_loader:
+                for vi, (vx, vy) in enumerate(val_loader):
+                    if vi * BATCH >= VAL_MAX:
+                        break
                     vx, vy = vx.to(device, non_blocking=True), vy.to(device, non_blocking=True)
                     _, l = model(vx, vy)
                     vl += l.item() * len(vx); vn += len(vx)
             val_avg = vl / max(vn, 1)
-            log(f"  VAL CE: {val_avg:.4f}")
+            log(f"  VAL CE: {val_avg:.4f} (n={vn})")
             if val_avg < best_val:
                 best_val = val_avg
-                state = {"step": step, "model_state": model.state_dict(), "config": cfg}
                 torch.save(state, CKPT_LOCAL)
                 uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
                 log(f"  >> best saved (val {best_val:.4f})")
