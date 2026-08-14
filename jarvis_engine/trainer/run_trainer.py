@@ -35,6 +35,7 @@ import math
 import shutil
 import subprocess
 import time
+import threading
 
 # Обязательно ДО инициализации CUDA-аллокатора: снижает фрагментацию (T4 16GB).
 if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
@@ -79,6 +80,43 @@ def pick_source(drive_path, local_path):
             log(f"  copy failed ({e}); читаю с Диска")
             return drive_path
     return None
+
+
+class AsyncUploader:
+    """Копирует чекпоинт на Диск в фоне, не блокируя тренинг.
+    Атомарно через .part -> os.replace; latest-wins (старый upload отменяется)."""
+
+    def __init__(self):
+        self._thread = None
+        self._lock = threading.Lock()
+        self._job = None
+
+    def submit(self, local, drive):
+        with self._lock:
+            self._job = (local, drive)
+        if self._thread is None or not self._thread.is_alive():
+            t = threading.Thread(target=self._run, daemon=True)
+            self._thread = t
+            t.start()
+
+    def _run(self):
+        while True:
+            with self._lock:
+                job = self._job
+                self._job = None
+            if job is None:
+                return
+            local, drive = job
+            try:
+                part = drive + ".part"
+                shutil.copyfile(local, part)
+                os.replace(part, drive)
+            except Exception as e:
+                log(f"[upload] {drive}: fail {e}")
+                continue
+
+
+uploader = AsyncUploader()
 
 
 log("Installing deps...")
@@ -404,12 +442,12 @@ for epoch in range(EPOCHS):
                 best_val = val_avg
                 state = {"step": step, "model_state": model.state_dict(), "config": cfg}
                 torch.save(state, CKPT_LOCAL)
-                shutil.copyfile(CKPT_LOCAL, CKPT_DRIVE)
+                uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
                 log(f"  >> best saved (val {best_val:.4f})")
             model.train()
 
 state = {"step": step, "model_state": model.state_dict(), "config": cfg}
 torch.save(state, FINAl_LOCAL)
-shutil.copyfile(FINAl_LOCAL, os.path.join(CKPT_DIR, "final.pt"))
+uploader.submit(FINAl_LOCAL, os.path.join(CKPT_DIR, "final.pt"))
 log(f"DONE. Step={step}, best_val={best_val:.4f}")
 log(f"Следующее: 1-bit export (S3) + bitnet.cpp fork (см. SPEC_3B_MOF.md).")
