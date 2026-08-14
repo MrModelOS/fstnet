@@ -233,9 +233,9 @@ class DS(torch.utils.data.Dataset):
             xs, ys = self.x[k][s:L], self.y[k][s:L]   # хвост контента (ответ ассистента)
         else:
             xs, ys = self.x[k][:self.seq_len], self.y[k][:self.seq_len]  # контент+паддинг (loss игнорит)
-        xv = torch.from_numpy(np.ascontiguousarray(xs)).clone()
-        yv = torch.from_numpy(np.ascontiguousarray(ys)).clone()
-        return xv.long(), yv.long()
+        xv = torch.from_numpy(np.ascontiguousarray(xs, dtype=np.int64).copy())
+        yv = torch.from_numpy(np.ascontiguousarray(ys, dtype=np.int64).copy())
+        return xv, yv
 
 
 log("Pre-tokenization...")
@@ -271,7 +271,7 @@ val_idx = perm[:val_n]
 tr_idx = perm[val_n:]
 log(f"Train: {len(tr_idx)}, Val: {len(val_idx)}")
 
-SEQ = int(os.environ.get("FSTNET_SEQ", "2048"))     # кроп до 2k токенов: attention 4096^2 не влезает в T4
+SEQ = int(os.environ.get("FSTNET_SEQ", "1024"))    # кроп: веса+грады=13.2GB,левые активации ~1.8GB; 2048² не влезал
 
 log("  compting content lens...")
 W = X.shape[1]
@@ -281,7 +281,8 @@ for s in range(0, len(X), CH):
     b = np.asarray(X[s:s + CH]) != 0
     col = b[:, ::-1].argmax(axis=1)
     lens[s:s + CH] = np.where(b.any(axis=1), W - col, 0)
-log(f"  lens: avg={lens.mean():.0f} max={lens.max()}")
+log(f"  lens: avg={lens.mean():.0f} p50={np.percentile(lens,50):.0f} "
+    f"p95={np.percentile(lens,95):.0f} p99={np.percentile(lens,99):.0f} max={lens.max():.0f}")
 
 train_ds = DS(X, Y, tr_idx, seq_len=SEQ, lens=lens)
 val_ds = DS(X, Y, val_idx, seq_len=SEQ, lens=lens)
