@@ -36,6 +36,10 @@ import shutil
 import subprocess
 import time
 
+# Обязательно ДО инициализации CUDA-аллокатора: снижает фрагментацию (T4 16GB).
+if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import numpy as np
 
 def log(msg): print(msg, flush=True)
@@ -217,13 +221,20 @@ def tokenize_to_memmap(path, seq_len, x_path, y_path):
 
 
 class DS(torch.utils.data.Dataset):
-    def __init__(self, x, y, idx):
+    def __init__(self, x, y, idx, seq_len, lens):
         self.x = x; self.y = y; self.idx = idx
+        self.seq_len = seq_len; self.lens = lens
     def __len__(self): return len(self.idx)
     def __getitem__(self, i):
         k = int(self.idx[i])
-        xv = torch.from_numpy(np.ascontiguousarray(self.x[k])).clone()
-        yv = torch.from_numpy(np.ascontiguousarray(self.y[k])).clone()
+        L = int(self.lens[k])
+        if L > self.seq_len:
+            s = L - self.seq_len
+            xs, ys = self.x[k][s:L], self.y[k][s:L]   # хвост контента (ответ ассистента)
+        else:
+            xs, ys = self.x[k][:self.seq_len], self.y[k][:self.seq_len]  # контент+паддинг (loss игнорит)
+        xv = torch.from_numpy(np.ascontiguousarray(xs)).clone()
+        yv = torch.from_numpy(np.ascontiguousarray(ys)).clone()
         return xv.long(), yv.long()
 
 
@@ -260,10 +271,22 @@ val_idx = perm[:val_n]
 tr_idx = perm[val_n:]
 log(f"Train: {len(tr_idx)}, Val: {len(val_idx)}")
 
-train_ds = DS(X, Y, tr_idx)
-val_ds = DS(X, Y, val_idx)
-BATCH = int(os.environ.get("FSTNET_BATCH", "2"))    # T4 16GB: 3.4B fp16 веса+грады ≈13.6GB
-ACCUM = int(os.environ.get("FSTNET_ACCUM", "32"))    # эффективный батч 64
+SEQ = int(os.environ.get("FSTNET_SEQ", "2048"))     # кроп до 2k токенов: attention 4096^2 не влезает в T4
+
+log("  compting content lens...")
+W = X.shape[1]
+lens = np.empty(len(X), dtype=np.int64)
+CH = 8192
+for s in range(0, len(X), CH):
+    b = np.asarray(X[s:s + CH]) != 0
+    col = b[:, ::-1].argmax(axis=1)
+    lens[s:s + CH] = np.where(b.any(axis=1), W - col, 0)
+log(f"  lens: avg={lens.mean():.0f} max={lens.max()}")
+
+train_ds = DS(X, Y, tr_idx, seq_len=SEQ, lens=lens)
+val_ds = DS(X, Y, val_idx, seq_len=SEQ, lens=lens)
+BATCH = int(os.environ.get("FSTNET_BATCH", "1"))    # T4 16GB: 3.4B fp16 веса+грады ≈13.2GB
+ACCUM = int(os.environ.get("FSTNET_ACCUM", "64"))    # эффективный батч 64
 WORKERS = int(os.environ.get("FSTNET_WORKERS", "0"))
 train_loader = torch.utils.data.DataLoader(
     train_ds, batch_size=BATCH, shuffle=True, num_workers=WORKERS,
@@ -319,7 +342,6 @@ def apply_phase(p, freeze_w0):
             m.quant_in = STAGE == 2 or p >= 0.5
 
 
-SEQ = cfg.max_seq_len
 step = step0
 t0 = time.time()
 best_val = float("inf")
