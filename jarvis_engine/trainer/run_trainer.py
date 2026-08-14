@@ -222,8 +222,9 @@ class DS(torch.utils.data.Dataset):
     def __len__(self): return len(self.idx)
     def __getitem__(self, i):
         k = int(self.idx[i])
-        return (torch.from_numpy(np.ascontiguousarray(self.x[k])).long(),
-                torch.from_numpy(np.ascontiguousarray(self.y[k])).long())
+        xv = torch.from_numpy(np.ascontiguousarray(self.x[k])).clone()
+        yv = torch.from_numpy(np.ascontiguousarray(self.y[k])).clone()
+        return xv.long(), yv.long()
 
 
 log("Pre-tokenization...")

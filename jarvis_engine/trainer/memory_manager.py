@@ -66,7 +66,9 @@ def _checkpointed_forward(block: nn.Module):
 
     def forward(self, x, freqs=None, mask=None, kv_cache=None):
         if self.training:
-            return ckpt.checkpoint(lambda x_, f_, m_: orig(self, x_, f_, m_), x, freqs, mask)
+            return ckpt.checkpoint(
+                lambda x_, f_, m_: orig(self, x_, f_, m_),
+                x, freqs, mask, use_reentrant=False)
         return orig(self, x, freqs, mask, kv_cache)
 
     block.forward = forward.__get__(block, type(block))

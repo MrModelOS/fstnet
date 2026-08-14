@@ -91,7 +91,7 @@ def precompute_rope(head_dim, max_seq_len, base=10000.0, device=None, dtype=torc
 def apply_rope(x, freqs):
     T = x.shape[1]
     pairs = x.shape[-1] // 2
-    f = freqs[:T, :pairs]
+    f = freqs[:T, :pairs].to(x.dtype)  # буфер fp32 -> каст к dtype входа (fp16/bf16)
     f = f.reshape(T, 1, pairs, 2)
     xh = x.reshape(*x.shape[:-1], pairs, 2)
     x_rot = torch.stack((xh[..., 0] * f[..., 0] - xh[..., 1] * f[..., 1],
