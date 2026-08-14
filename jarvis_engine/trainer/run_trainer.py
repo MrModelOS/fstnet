@@ -65,9 +65,7 @@ CKPT_DRIVE = os.path.join(CKPT_DIR, "moF_best.pt")
 CKPT_LOCAL = os.path.join(CONTENT, f"best_3b_mof{'' if STAGE == 1 else '_stage2'}.pt")
 FINAl_LOCAL = os.path.join(CONTENT, f"final_3b_mof{'' if STAGE == 1 else '_stage2'}.pt")
 CACHE_DRIVE = os.path.join(CKPT_DIR, "jarvis_mof_samples.npz")
-CACHE_LOCAL = os.path.join(CONTENT, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}.npz")
-
-
+CACHE_LOCAL_NPZ = os.path.join(CONTENT, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}.npz")
 def pick_source(drive_path, local_path):
     if os.path.exists(local_path) and os.path.getsize(local_path) > 100_000_000:
         return local_path
@@ -152,6 +150,55 @@ def save_npz_streaming(path, arrays, chunk=4 << 20):
                 mv = memoryview(arr).cast("B")
                 for i in range(0, len(mv), chunk):
                     f.write(mv[i:i + chunk])
+
+
+def extract_npz_to_memmap(npz_path, x_out, y_out):
+    """npz -> два .npy memmap потоково (без распаковки массива в RAM).
+    Для сжатых npz np.load(mmap_mode='r') НЕ даёт memmap — распаковывает всё
+    в память (X+Y = 16GB при ~485k seq 4096 = OOM). Здесь читаем headers и
+    пишем raw-данные напрямую в memmap-файлы порциями через ZipExtFile.read.
+
+    RSS-ом это не взрывает: распаковка идёт порциями, в RAM держится только
+    текущий чанк (CHUNK), а не весь массив.
+    """
+    import ast as _ast
+    CHUNK = 16 << 20  # 16MB на чанк декомпрессии
+    with zipfile.ZipFile(npz_path) as zf:
+        for key, out in (("x", x_out), ("y", y_out)):
+            with zf.open(f"{key}.npy") as src:
+                magic = src.read(6)
+                if magic != b"\x93NUMPY":
+                    raise ValueError(f"{npz_path}: {key}.npy не npy-формат")
+                ver = src.read(2)
+                if ver == b"\x01\x00":
+                    hlen = int.from_bytes(src.read(2), "little")
+                elif ver == b"\x02\x00":
+                    hlen = int.from_bytes(src.read(4), "little")
+                else:
+                    raise ValueError(f"{npz_path}: версия npy {ver!r} не поддерживается")
+                hdr = src.read(hlen)
+                meta = _ast.literal_eval(hdr.decode("latin-1"))
+                dt = np.dtype(meta["descr"])
+                shape = tuple(meta["shape"])
+                mm = npyfmt.open_memmap(out, mode="w+", dtype=dt, shape=shape)
+                flat = mm.reshape(-1)
+                itemsize = dt.itemsize
+                off = 0
+                tail = b""
+                while True:
+                    buf = src.read(CHUNK)
+                    if not buf:
+                        break
+                    buf = tail + buf
+                    n = len(buf) // itemsize
+                    if n:
+                        flat[off:off + n] = np.frombuffer(buf[:n * itemsize], dtype=dt)
+                        off += n
+                    tail = buf[n * itemsize:]
+                mm.flush()
+                log(f"  extracted {key} -> {out} ({tuple(mm.shape)}, "
+                    f"{mm.nbytes / 1e9:.1f}GB)")
+                del flat, mm
 
 
 cfg = FSTMoFConfig()
@@ -279,27 +326,60 @@ class DS(torch.utils.data.Dataset):
 log("Pre-tokenization...")
 X_LOCAL = os.path.join(CONTENT, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}_x.npy")
 Y_LOCAL = os.path.join(CONTENT, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}_y.npy")
+X_DRIVE = os.path.join(CKPT_DIR, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}_x.npy")
+Y_DRIVE = os.path.join(CKPT_DIR, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}_y.npy")
+CACHE_LOCAL_NPZ = os.path.join(CONTENT, f"jarvis_mof_samples{'' if STAGE == 1 else '_stage2'}.npz")
+
+
+def ensure_memmap_cache():
+    if os.path.exists(X_LOCAL) and os.path.exists(Y_LOCAL):
+        return np.load(X_LOCAL, mmap_mode="r"), np.load(Y_LOCAL, mmap_mode="r"), "memmap local"
+    if os.path.exists(X_DRIVE) and os.path.exists(Y_DRIVE):
+        try:
+            shutil.copyfile(X_DRIVE, X_LOCAL)
+            shutil.copyfile(Y_DRIVE, Y_LOCAL)
+            return (np.load(X_LOCAL, mmap_mode="r"), np.load(Y_LOCAL, mmap_mode="r"),
+                    "memmap c Диска")
+        except Exception as e:
+            log(f"  [WARN] копия memmap c Диска: {e}")
+    for npz in (CACHE_LOCAL_NPZ, CACHE_DRIVE):
+        if os.path.exists(npz):
+            src = npz
+            if npz is not CACHE_LOCAL_NPZ and "/content/drive" in npz:
+                try:
+                    log(f"  copy c Drive -> {CACHE_LOCAL_NPZ}")
+                    shutil.copyfile(npz, CACHE_LOCAL_NPZ)
+                    src = CACHE_LOCAL_NPZ
+                except Exception as e:
+                    log(f"  [WARN] копия npz с Диска: {e}")
+            log(f"  извлекаю npz -> memmap: {src}")
+            extract_npz_to_memmap(src, X_LOCAL, Y_LOCAL)
+            return np.load(X_LOCAL, mmap_mode="r"), np.load(Y_LOCAL, mmap_mode="r"), "npz->memmap"
+    return None
+
+
+X = Y = None
+src_kind = None
 if os.path.exists(X_LOCAL) and os.path.exists(Y_LOCAL):
     X = np.load(X_LOCAL, mmap_mode="r")
     Y = np.load(Y_LOCAL, mmap_mode="r")
     log(f"  memmap cache: {X_LOCAL}")
 else:
-    npz = pick_source(CACHE_DRIVE, CACHE_LOCAL)
-    if npz:
-        d = np.load(npz, mmap_mode="r")
-        X, Y = d["x"], d["y"]
-        log(f"  npz cache: {npz}")
-    else:
+    got = ensure_memmap_cache()
+    if got is None:
         tokenize_to_memmap(os.environ.get("FSTNET_DATA", "data/jarvis_full.json"),
                            cfg.max_seq_len, X_LOCAL, Y_LOCAL)
         X = np.load(X_LOCAL, mmap_mode="r")
         Y = np.load(Y_LOCAL, mmap_mode="r")
-        for dst in (CACHE_LOCAL, CACHE_DRIVE):
+        for dst in (CACHE_LOCAL_NPZ, CACHE_DRIVE):
             try:
                 save_npz_streaming(dst, (("x", X), ("y", Y)))
                 log(f"  npz backup -> {dst}")
             except Exception as e:
                 log(f"  [WARN] npz {dst} не записан: {e}")
+    else:
+        X, Y, src_kind = got
+        log(f"  cache: {src_kind}")
 
 rng_seed = int(os.environ.get("JARVIS_SEED", "42"))
 rng = np.random.default_rng(rng_seed)
