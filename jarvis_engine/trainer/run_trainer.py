@@ -127,7 +127,9 @@ if device == "cuda":
 else:
     COMPUTE_DTYPE = torch.float32
 log(f"device={device} sm_{cap}; модель в {COMPUTE_DTYPE} (Adafactor, без GradScaler)")
-model = FSTMoFModel(cfg).to(device=device, dtype=COMPUTE_DTYPE)
+torch.set_default_dtype(COMPUTE_DTYPE)  # создаём сразу в fp16/bf16: 3.4B fp32 на CPU = OOM (~13.6GB)
+model = FSTMoFModel(cfg).to(device=device)
+torch.set_default_dtype(torch.float32)
 
 mm = enable_if_env(device)
 mm.wrap_model(model)

@@ -185,14 +185,15 @@ def main():
     args = ap.parse_args()
 
     ts = time.strftime("%Y%m%d_%H%M%S")
-    os.makedirs(LOG_DIR, exist_ok=True)
-    logf = open(os.path.join(LOG_DIR, f"run_{ts}.log"), "w")
 
     log("=" * 60)
     log("JARVIS FULL TRAINING (Stage 1 + Stage 2) | 3B 1-bit MoF")
     log("=" * 60)
     mount_drive()
     ensure_repo()
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+    logf = open(os.path.join(LOG_DIR, f"run_{ts}.log"), "w")
 
     pip("tokenizers", "tqdm", "ijson")
 
