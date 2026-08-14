@@ -6,7 +6,7 @@ Fallback: если сервер недоступен — локальная си
 
 Выход:
   data/distill.jsonl   — прогрессивно дописываемые траектории
-  data/jarvis_full.json — финальный массив [[role, content], ...] для engine/trainer_engine/custom_trainer.py
+  data/jarvis_full.json — финальный массив [[role, content], ...] для jarvis_engine/trainer/run_trainer.py
 
 Запуск:
   # терминал учителя (Colab T4/Kaggle P100):

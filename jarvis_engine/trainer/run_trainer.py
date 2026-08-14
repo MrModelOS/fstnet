@@ -21,10 +21,10 @@
   !python distill_colab.py --count 200000 --workers 8
   !python distill_colab.py --to-json --synthetic 40000
   # 2) обучение Stage 1 (общая база) -> чекпоинт checkpoints/3b_mof/moF_best.pt
-  !FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python engine/trainer_engine/custom_trainer.py
+  !FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python jarvis_engine/trainer/run_trainer.py
   # 3) обучение Stage 2 (спец. датасет, W0 заморожен, L_orth всегда)
   #    грузит 3b_mof/moF_best.pt, сохраняет в checkpoints/3b_mof_stage2/
-  !FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json FSTNET_EPOCHS=4 python engine/trainer_engine/custom_trainer.py
+  !FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json FSTNET_EPOCHS=4 python jarvis_engine/trainer/run_trainer.py
   # 4) проверка
   !python eval_mof.py --ckpt checkpoints/3b_mof_stage2/best.pt --val --gen 10
 """
@@ -41,8 +41,11 @@ import numpy as np
 def log(msg): print(msg, flush=True)
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _THIS)
-sys.path.insert(0, os.path.dirname(_THIS))  # корень fstnet: config_3b_mof, model, colab_drive
+sys.path.insert(0, _THIS)                       # ste_optimizer, memory_manager (этот каталог)
+sys.path.insert(0, os.path.dirname(_THIS))      # jarvis_engine/
+_ROOT = os.path.dirname(os.path.dirname(_THIS)) # корень fstnet/
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "brain"))  # config_3b_mof, model, colab_drive
 
 STAGE = int(os.environ.get("FSTNET_STAGE", "1"))
 if STAGE not in (1, 2):
