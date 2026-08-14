@@ -50,11 +50,17 @@ class ContinuousField(nn.Module):
         nn.init.normal_(self.V, std=0.02)
 
     def forward(self, x, alpha, indices):
-        out = 0.0
-        for k, i in enumerate(indices.tolist() if not indices.is_cuda else indices.cpu().tolist()):
-            h = x @ self.U[i]
-            out = out + alpha[..., k].unsqueeze(-1) * (h @ self.V[i])
-        return out
+        # Векторизовано: без цикла и .cpu().tolist() (это давало 3072 host-device sync/forward).
+        # h = x @ U[k] по всем полям = FLATTEN(G_EMM): полноценный GEMM (b*t, n*r).
+        # out = sum_k alpha*((x@U[k])@V[k]) ТАЧФ.
+        b, t, i = x.shape
+        n, r = self.U.shape[0], self.U.shape[2]
+        x2 = x.reshape(-1, i)                                        # (b*t, i)
+        Uf = self.U.transpose(0, 1).reshape(i, -1)                   # (i, n*r) = U[0]|U[1]|..|U[n-1] колонками
+        H = x2 @ Uf                                                  # (b*t, n*r)
+        H = H.view(-1, n, r) * alpha.reshape(-1, n, 1)               # взвесить alpha (b*t,n,1)
+        out = H.view(-1, n * r) @ self.V.reshape(n * r, -1)          # (b*t, o)
+        return out.view(b, t, -1)
 
     def orth_loss(self):
         n = self.U.shape[0]

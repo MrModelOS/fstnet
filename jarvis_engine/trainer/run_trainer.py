@@ -269,6 +269,10 @@ perm = rng.permutation(len(X))
 val_n = max(int(len(X) * 0.03), 1)
 val_idx = perm[:val_n]
 tr_idx = perm[val_n:]
+sample_n = int(os.environ.get("FSTNET_SAMPLES", "100000"))
+if len(tr_idx) > sample_n:
+    tr_idx = tr_idx[:sample_n]
+    log(f"  subsample: {sample_n} (из {len(perm) - val_n})")
 log(f"Train: {len(tr_idx)}, Val: {len(val_idx)}")
 
 SEQ = int(os.environ.get("FSTNET_SEQ", "1024"))    # кроп: веса+грады=13.2GB,левые активации ~1.8GB; 2048² не влезал
@@ -284,10 +288,11 @@ for s in range(0, len(X), CH):
 log(f"  lens: avg={lens.mean():.0f} p50={np.percentile(lens,50):.0f} "
     f"p95={np.percentile(lens,95):.0f} p99={np.percentile(lens,99):.0f} max={lens.max():.0f}")
 
+SEQ = int(os.environ.get("FSTNET_SEQ", "512"))     # avg контента 347: 512 хватает, attention в 4x меньше чем 2048
 train_ds = DS(X, Y, tr_idx, seq_len=SEQ, lens=lens)
 val_ds = DS(X, Y, val_idx, seq_len=SEQ, lens=lens)
-BATCH = int(os.environ.get("FSTNET_BATCH", "1"))    # T4 16GB: 3.4B fp16 веса+грады ≈13.2GB
-ACCUM = int(os.environ.get("FSTNET_ACCUM", "64"))    # эффективный батч 64
+BATCH = int(os.environ.get("FSTNET_BATCH", "2"))    # T4 16GB: веса+грады 13.2GB; 2048² в attention не влезал
+ACCUM = int(os.environ.get("FSTNET_ACCUM", "32"))    # эффективный батч 64
 WORKERS = int(os.environ.get("FSTNET_WORKERS", "0"))
 train_loader = torch.utils.data.DataLoader(
     train_ds, batch_size=BATCH, shuffle=True, num_workers=WORKERS,
@@ -296,7 +301,7 @@ val_loader = torch.utils.data.DataLoader(
     val_ds, batch_size=BATCH, shuffle=False, num_workers=WORKERS,
     pin_memory=False, persistent_workers=WORKERS > 0)
 
-EPOCHS = int(os.environ.get("FSTNET_EPOCHS", "4"))
+EPOCHS = int(os.environ.get("FSTNET_EPOCHS", "1"))
 LEARN_RATE = float(os.environ.get("FSTNET_LR", "2e-4"))
 step0 = start_step if STAGE == 1 else 0
 total_steps = EPOCHS * len(tr_idx) // (BATCH * ACCUM) + step0
