@@ -21,18 +21,18 @@ drive.mount() не работает (нет ядра). Если Диск не с
        после обеспечения — синхронизируем на Диск (следующие запуски без сборки).
   5. Автопродолжение: обучение возобновляется с последнего чекпоинта (локально или на Диске);
      уже завершённая стадия (final.pt есть) пропускается:
-       Stage 1:  FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python jarvis_engine/trainer/run_trainer.py
+Stage 1:  FSTNET_EPOCHS=1 FSTNET_LR=2e-4 python jarvis_engine/trainer/run_trainer.py
                  -> checkpoints/3b_mof/moF_best.pt (локально и на Диске).
        Stage 2:  FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json python jarvis_engine/trainer/run_trainer.py
                  -> checkpoints/3b_mof_stage2/.
-  6. Лог прогона -> Диск: MyDrive/fstnet/logs/run_<ts>.log.
+   6. Лог прогона -> Диск: MyDrive/fstnet/logs/run_<ts>.log.
 
 Флаги:
   --stage1-only   только Stage 1
   --skip-data     не трогать датасеты (обучение на том, что уже в data/)
   --fresh         удалить чекпоинты (локально и на Диске) — чистый старт
 
-Env-перезапись (передаются в обучение): RUN_EPOCHS (4), RUN_LR (2e-4),
+Env-перезапись (передаются в обучение): RUN_EPOCHS (1), RUN_LR (2e-4),
 JARVIS_COUNT (200K синтетики Stage 1), JARVIS_COUNT_SPEC (500K Stage 2),
 плюс все FSTNET_*/JARVIS_* уже заданные в ячейке пробрасываются как есть.
 """
@@ -50,7 +50,7 @@ DRIVE_DATA = "/content/drive/MyDrive/fstnet/data"
 DRIVE_LOG = "/content/drive/MyDrive/fstnet/logs"
 DRIVE_CKPT = "/content/drive/MyDrive/fstnet/checkpoints"
 
-EPOCHS = int(os.environ.get("RUN_EPOCHS", "4"))
+EPOCHS = int(os.environ.get("RUN_EPOCHS", "1"))
 LR = os.environ.get("RUN_LR", "2e-4")
 
 

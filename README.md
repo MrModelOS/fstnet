@@ -60,11 +60,11 @@ cd brain
 
 3B 1-bit MoF (Stage 1 + Stage 2) — полный авто-запуск:
 ```bash
-!wget -q https://raw.githubusercontent.com/MrModelOS/fstnet/master/brain/colab_run_full.py
-%run brain/colab_run_full.py
+!wget -q https://raw.githubusercontent.com/MrModelOS/fstnet/master/colab_run_full.py
+%run colab_run_full.py
 ```
 
-Optimizations: Drive auto-mount + SSD cache (`.npz`/`.pt`), fp16 on T4 / bf16 on Ampere+, SDPA, batch 16×accum 2, optional `FSTNET_COMPILE=1`. Checkpoints always duplicated to `MyDrive/fstnet/checkpoints/`.
+Optimizations: Drive auto-mount + SSD cache (`.npz`/`.pt`), fp16 on T4 / bf16 on Ampere+, grad-checkpointing, vectorized MoF fields, subsample 100k/эпоху, batch 2×accum 32 (eff 64), seq 512, optional `FSTNET_COMPILE=1`. Checkpoints always duplicated to `MyDrive/fstnet/checkpoints/`.
 
 ## Model Config
 
