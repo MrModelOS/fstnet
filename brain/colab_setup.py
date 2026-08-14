@@ -58,7 +58,7 @@ def sync_repo():
 
 def make_checkpoints():
     """Создаёт каталоги чекпоинтов локально и (при наличии Диска) на Диске."""
-    local = os.path.join(SKILL_DIR, "checkpoints")
+    local = os.path.join(SKILL_DIR, "brain", "checkpoints")
     os.makedirs(os.path.join(local, "152m"), exist_ok=True)
     os.makedirs(os.path.join(local, "800m"), exist_ok=True)
     os.makedirs(os.path.join(local, "3b_mof"), exist_ok=True)

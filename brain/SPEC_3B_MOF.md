@@ -152,7 +152,7 @@ Active/токен (base + top-GS/32 полей):
 
 1. `config_3b_mof.py` — конфиг ✅
 2. `model/core_mof.py` — BitLinear(STE), ContinuousField, GQA+RoPE, гиперсеть, L_orth ✅
-3. `train_colab_mof.py` — фазы S0-S2, npz-кэш, Drive-персист, resume ✅
+3. `engine/trainer_engine/custom_trainer.py` — фазы S0-S2, npz-кэш, Drive-персист, resume ✅
 4. `build_jarvis_data.py` — думающие траектории ✅
 5. Генерация датасета 150-200K учителем (отдельный скрипт дистилляции — TODO)
 6. 1-bit pack + GGUF + bitnet.cpp fork — TODO (после валидации качества на MX450-тесте)

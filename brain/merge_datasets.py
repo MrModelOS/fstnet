@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Мерж датасетов для train_colab_mof.py в единый data/jarvis_full.json.
+"""Мерж датасетов для engine/trainer_engine/custom_trainer.py в единый data/jarvis_full.json.
 
 Стратегия: добавляемый датасет (OpenHermes = массовая диалоговая база) идёт
 вперемешку с базой (JARVIS синтетика = персона/tool-call/Сэр). Пропорция

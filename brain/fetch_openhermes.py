@@ -9,7 +9,7 @@
 
 Итоговый пайплайн датасета (мерж):
   OpenHermes (массовая база диалога) + синтетика JARVIS (персона/tool-call/Сэр)
-    -> data/jarvis_full.json  (для train_colab_mof.py)
+    -> data/jarvis_full.json  (для engine/trainer_engine/custom_trainer.py)
 
 Запуск (локально или Colab):
   !pip install -q datasets

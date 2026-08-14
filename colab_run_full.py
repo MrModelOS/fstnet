@@ -21,9 +21,9 @@ drive.mount() не работает (нет ядра). Если Диск не с
        после обеспечения — синхронизируем на Диск (следующие запуски без сборки).
   5. Автопродолжение: обучение возобновляется с последнего чекпоинта (локально или на Диске);
      уже завершённая стадия (final.pt есть) пропускается:
-       Stage 1:  FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python train_colab_mof.py
+       Stage 1:  FSTNET_EPOCHS=4 FSTNET_LR=2e-4 python engine/trainer_engine/custom_trainer.py
                  -> checkpoints/3b_mof/moF_best.pt (локально и на Диске).
-       Stage 2:  FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json python train_colab_mof.py
+       Stage 2:  FSTNET_STAGE=2 FSTNET_DATA=data/jarvis_special.json python engine/trainer_engine/custom_trainer.py
                  -> checkpoints/3b_mof_stage2/.
   6. Лог прогона -> Диск: MyDrive/fstnet/logs/run_<ts>.log.
 
@@ -258,7 +258,7 @@ def main():
         log("Stage 1 уже завершён (final.pt есть) — пропускаю обучение Stage 1.")
     else:
         log("\n########## STAGE 1 (общая база, W0 float->1bit) ##########")
-        rc1 = run(["python", "train_colab_mof.py"], train_env({"FSTNET_DATA": "data/jarvis_full.json"}), logf)
+        rc1 = run(["python", "engine/trainer_engine/custom_trainer.py"], train_env({"FSTNET_DATA": "data/jarvis_full.json"}), logf)
         if rc1 != 0:
             log("[FAIL] Stage 1 упал. Смотри лог выше. Stage 2 пропущен.")
             sync_file(os.path.join(LOG_DIR, f"run_{ts}.log"),
@@ -277,7 +277,7 @@ def main():
         else:
             ensure_stage1_best()
             log("\n########## STAGE 2 (спец. датасет, W0 frozen, L_orth) ##########")
-            rc2 = run(["python", "train_colab_mof.py"],
+            rc2 = run(["python", "engine/trainer_engine/custom_trainer.py"],
                       train_env({"FSTNET_STAGE": "2",
                                  "FSTNET_DATA": "data/jarvis_special.json"}), logf)
             if rc2 != 0:
