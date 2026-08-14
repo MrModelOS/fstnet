@@ -43,11 +43,19 @@ class MemoryManager:
             if self.device == "cuda":
                 torch.cuda.empty_cache()
 
+    def reset(self):
+        """Обнуляет пик-статистику CUDA-аллокатора (вызывать ДО цикла обучения),
+        чтобы отчёты показывали пик только тренировочного цикла."""
+        if self.device == "cuda":
+            torch.cuda.reset_peak_memory_stats()
+            self.peak_mb = 0
+
     def after_step(self):
         """После optim.step(): фиксирует пик VRAM и мягко очищает кеш."""
         if self.device == "cuda":
+            self.peak_mb = max(self.peak_mb,
+                               torch.cuda.max_memory_allocated() / 1024**2)
             alloc = torch.cuda.memory_allocated() / 1024**2
-            self.peak_mb = max(self.peak_mb, alloc)
             if self.peak_mb - alloc > 512:
                 torch.cuda.empty_cache()
 

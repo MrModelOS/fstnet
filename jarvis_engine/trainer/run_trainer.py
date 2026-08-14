@@ -470,6 +470,7 @@ def apply_phase(p, freeze_w0):
 step = step0
 t0 = time.time()
 best_val = float("inf")
+mm.reset()  # пик VRAM считать только с тренировочного цикла (не с создания модели)
 apply_phase(step / max(1, total_steps), freeze_w0=False)
 model.train()
 
@@ -477,9 +478,10 @@ log(f"Training: {total_steps} steps | batch={BATCH} accum={ACCUM} (eff {BATCH*AC
     f"lr={LEARN_RATE:.1e} | EPOCHS={EPOCHS} | seq={SEQ} | fields={cfg.n_fields} topk={cfg.gating_top_k}")
 
 for epoch in range(EPOCHS):
-    pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}")
+    pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}",
+                total=len(train_loader), unit="batch")
     opt.zero_grad(set_to_none=True)
-    for bx, by in pbar:
+    for it, (bx, by) in enumerate(pbar):
         bx, by = (bx.to(device, non_blocking=True),
                   by.to(device, non_blocking=True))
         p = step / max(1, total_steps)
@@ -493,14 +495,15 @@ for epoch in range(EPOCHS):
         loss = loss / ACCUM
         mm.before_backward()
         loss.backward()
-        step += 1
-        if step % ACCUM == 0:
+        if (it + 1) % ACCUM == 0:
             opt.step()
             opt.zero_grad(set_to_none=True)
             sch.step()
             mm.after_step()
+            step += 1
+            pbar.set_postfix(opt=f"{step}/{total_steps}")
 
-        if step % 50 == 0:
+        if step % 25 == 0 and (it + 1) % ACCUM == 0:
             el = time.time() - t0
             eta = el / max(step - step0, 1) * (total_steps - step)
             curr_ratio = model.blocks[0].ffn.W0g.binarize
@@ -509,7 +512,7 @@ for epoch in range(EPOCHS):
                 f"β {curr_ratio:.2f} | LR {sch.get_last_lr()[0]:.2e} | "
                 f"{mm.report()} | ETA {eta/60:.0f}min")
 
-        if step % 500 == 0:
+        if step % 500 == 0 and step > 0:
             state = {"step": step, "model_state": model.state_dict(), "config": cfg}
             torch.save(state, CKPT_LOCAL)
             uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
