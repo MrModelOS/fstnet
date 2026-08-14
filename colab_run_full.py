@@ -170,6 +170,7 @@ def train_env(extra):
     env = dict(os.environ)
     env.setdefault("FSTNET_EPOCHS", str(EPOCHS))
     env.setdefault("FSTNET_LR", LR)
+    env.setdefault("FSTNET_COMPILE", "1")
     if drive_mounted():
         env.setdefault("FSTNET_CKPT_DIR", DRIVE_CKPT)
     env.update(extra)
