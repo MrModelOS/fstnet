@@ -261,8 +261,8 @@ log(f"Train: {len(tr_idx)}, Val: {len(val_idx)}")
 
 train_ds = DS(X, Y, tr_idx)
 val_ds = DS(X, Y, val_idx)
-BATCH = int(os.environ.get("FSTNET_BATCH", "8"))
-ACCUM = int(os.environ.get("FSTNET_ACCUM", "8"))
+BATCH = int(os.environ.get("FSTNET_BATCH", "2"))    # T4 16GB: 3.4B fp16 веса+грады ≈13.6GB
+ACCUM = int(os.environ.get("FSTNET_ACCUM", "32"))    # эффективный батч 64
 WORKERS = int(os.environ.get("FSTNET_WORKERS", "0"))
 train_loader = torch.utils.data.DataLoader(
     train_ds, batch_size=BATCH, shuffle=True, num_workers=WORKERS,

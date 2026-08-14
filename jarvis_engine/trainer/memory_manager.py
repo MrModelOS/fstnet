@@ -74,7 +74,12 @@ def _checkpointed_forward(block: nn.Module):
 
 
 def enable_if_env(device: str = "cuda") -> MemoryManager:
-    """Создаёт MemoryManager по env FSTNET_GRAD_CKPT (1/0) и FSTNET_CKPT_EVERY."""
-    grad_ckpt = os.environ.get("FSTNET_GRAD_CKPT", "").strip() in ("1", "true", "yes")
+    """Создаёт MemoryManager.
+
+    Gradient checkpointing ВКЛЮЧЁН по умолчанию (для 3.4B на T4 16GB веса+грады
+    уже 13.6GB — активации хранить негде). Отключить: FSTNET_GRAD_CKPT=0.
+    FSTNET_CKPT_EVERY — как часто чистить кеш (по умолчанию 50 шагов).
+    """
+    grad_ckpt = os.environ.get("FSTNET_GRAD_CKPT", "1").strip() not in ("0", "false", "no")
     every = int(os.environ.get("FSTNET_CKPT_EVERY", "50"))
     return MemoryManager(grad_ckpt=grad_ckpt, empty_cache_every=every, device=device)
