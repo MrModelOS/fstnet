@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+import os
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 @dataclass
 class FSTMoFConfig:
     vocab_size: int = 32770
-    tokenizer_path: str = "tokenizer/fst_bpe.json"
+    tokenizer_path: str = os.path.join(_HERE, "tokenizer", "fst_bpe.json")
     dim: int = 2048
     n_layers: int = 32
     n_heads: int = 16
@@ -22,6 +25,7 @@ class FSTMoFConfig:
     quant_act: bool = False
 
     binarize_ratio: float = 1.0
+    grad_ckpt: bool = False
 
     init_std: float = 0.02
     hidden_alpha: int = 512

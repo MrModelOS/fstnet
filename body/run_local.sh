@@ -8,7 +8,7 @@ export OLLAMA_NUM_PARALLEL=1
 # ollama run fstnet "prompt"
 
 # Option 2: Custom server (lower overhead)
-nice -n 10 ionice -c 3 python3 fstnet_server.py &
+nice -n 10 ionice -c 3 python3 body/fstnet_server.py &
 
 # Option 3: llama.cpp with Vulkan
 # ./llama-server -m checkpoints/fstnet-152m-q8.gguf -ngl 99 --ctx-size 2048 -t 4 --memory-f16

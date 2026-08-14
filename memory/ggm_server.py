@@ -29,7 +29,7 @@ class GGMServer:
         self.lock = threading.Lock()
 
     def _make_ggm(self):
-        from memory.ggm import GraphGatedMemory, GGMConfig, TfidfSvdEmbedder, MiniLMEmbedder
+        from ggm import GraphGatedMemory, GGMConfig, TfidfSvdEmbedder, MiniLMEmbedder
         cfg = GGMConfig()
         try:
             emb = MiniLMEmbedder() if self.use_minilm else TfidfSvdEmbedder(cfg.d_model)

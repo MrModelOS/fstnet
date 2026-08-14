@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+import os
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 @dataclass
 class FSTConfig800M:
@@ -15,7 +18,7 @@ class FSTConfig800M:
     dropout: float = 0.1
     rope_theta: float = 10000.0
     rope_scaling: float = 1.0
-    tokenizer_path: str = "tokenizer/fst_bpe.json"
+    tokenizer_path: str = os.path.join(_HERE, "tokenizer", "fst_bpe.json")
     use_swiglu: bool = True
     use_gqa: bool = True
     im_start: str = "<|im_start|>"

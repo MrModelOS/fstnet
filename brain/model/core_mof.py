@@ -80,8 +80,9 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
-def precompute_rope(dim, max_seq_len, base=10000.0, device=None, dtype=torch.float32):
-    inv = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=dtype) / dim))
+def precompute_rope(head_dim, max_seq_len, base=10000.0, device=None, dtype=torch.float32):
+    pairs = head_dim // 2
+    inv = 1.0 / (base ** (torch.arange(pairs, dtype=dtype) / pairs))
     t = torch.arange(max_seq_len, dtype=dtype)
     freqs = torch.outer(t, inv)
     return torch.stack((freqs.cos(), freqs.sin()), dim=-1).to(device)
@@ -89,9 +90,10 @@ def precompute_rope(dim, max_seq_len, base=10000.0, device=None, dtype=torch.flo
 
 def apply_rope(x, freqs):
     T = x.shape[1]
-    f = freqs[:T]
-    f = f.reshape(T, 1, -1, 2)
-    xh = x.reshape(*x.shape[:-1], -1, 2)
+    pairs = x.shape[-1] // 2
+    f = freqs[:T, :pairs]
+    f = f.reshape(T, 1, pairs, 2)
+    xh = x.reshape(*x.shape[:-1], pairs, 2)
     x_rot = torch.stack((xh[..., 0] * f[..., 0] - xh[..., 1] * f[..., 1],
                          xh[..., 0] * f[..., 1] + xh[..., 1] * f[..., 0]), dim=-1)
     return x_rot.reshape(*x.shape)
@@ -209,7 +211,7 @@ class FSTMoFModel(nn.Module):
     def forward(self, idx, target=None):
         b, t = idx.shape
         x = self.tok_emb(idx)
-        mask = torch.triu(torch.full((t, t), float("-inf"), device=idx.device), diagonal=1) if t > 1 else None
+        mask = torch.triu(torch.full((t, t), float("-inf"), device=idx.device, dtype=x.dtype), diagonal=1) if t > 1 else None
         for blk in self.blocks:
             x = blk(x, self.freqs, mask)
         x = self.norm(x)

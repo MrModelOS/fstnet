@@ -31,7 +31,7 @@ import numpy as np
 
 def log(msg): print(msg, flush=True)
 
-sys.path.insert(0, os.getcwd())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from colab_drive import setup_checkpoint_dir
 CKPT_DIR = setup_checkpoint_dir(subdir="800m")

@@ -10,7 +10,7 @@ Env:
   FSTNET_MODEL=<path.pt>   чекпоинт (по умолч. checkpoints/800m/best.pt)
   FSTNET_PORT=<port>       порт (по умолч. 8000)
 """
-import os, json, time, requests
+import os, json, time, requests, sys
 import torch, torch.nn as nn
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -18,6 +18,11 @@ from typing import List, Optional
 from tokenizers import Tokenizer
 
 import uvicorn
+
+# ── Paths (перенесено в brain/) ────────────────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "brain"))
+TOKENIZER_PATH = os.path.join(_HERE, "..", "brain", "tokenizer", "fst_bpe.json")
 
 # ── Config ──────────────────────────────────────────────
 MODEL_PATH = os.environ.get("FSTNET_MODEL", "checkpoints/800m/best.pt")
@@ -39,7 +44,7 @@ model.load_state_dict(sd, strict=False)
 model = model.to(DEVICE).eval()
 print(f"Model loaded: {sum(p.numel() for p in model.parameters())/1e6:.1f}M params on {DEVICE}", flush=True)
 
-tok = Tokenizer.from_file("tokenizer/fst_bpe.json")
+tok = Tokenizer.from_file(TOKENIZER_PATH)
 tok.post_processor = None
 bos_id = tok.token_to_id("<bos>")
 im_end_id = tok.token_to_id("<|im_end|>")

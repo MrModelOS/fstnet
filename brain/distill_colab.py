@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 def log(msg): print(msg, flush=True)
 
-sys.path.insert(0, os.getcwd())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 BASE_URL = os.environ.get("TEACHER_URL", "http://localhost:8001/v1")
 MODEL = os.environ.get("TEACHER_MODEL", "qwen3.6-27b-bonsai-1bit")

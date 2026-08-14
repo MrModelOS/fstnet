@@ -22,7 +22,7 @@ import torch.nn as nn
 
 def log(msg): print(msg, flush=True)
 
-sys.path.insert(0, os.getcwd())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config_3b_mof import FSTMoFConfig
 from model.core_mof import FSTMoFModel

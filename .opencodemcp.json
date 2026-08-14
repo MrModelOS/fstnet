@@ -2,7 +2,9 @@
   "mcpServers": {
     "ggm": {
       "command": "python3",
-      "args": ["/home/mrmodel/Проекты/MyAi/fstnet/ggm_mcp.py"]
+      "args": [
+        "/home/mrmodel/Проекты/MyAi/fstnet/memory/ggm_mcp.py"
+      ]
     }
   }
 }

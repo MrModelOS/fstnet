@@ -34,7 +34,7 @@ def save_ggm(ggm, path: str):
 
 def load_ggm(path: str, config=None, embedder=None):
     """Загружает GGM с диска."""
-    from memory.ggm import GraphGatedMemory, GGMConfig, TfidfSvdEmbedder
+    from ggm import GraphGatedMemory, GGMConfig, TfidfSvdEmbedder
     if config is None:
         config = GGMConfig()
     ggm = GraphGatedMemory(config, embedder=embedder or TfidfSvdEmbedder(config.d_model))
@@ -59,7 +59,7 @@ def main():
     cmd = sys.argv[1]
 
     if cmd == "index":
-        from memory.ggm import GraphGatedMemory, GGMConfig, TfidfSvdEmbedder, MiniLMEmbedder
+        from ggm import GraphGatedMemory, GGMConfig, TfidfSvdEmbedder, MiniLMEmbedder
         target = sys.argv[2]
         out = "checkpoints/ggm_index.faiss"
         use_minilm = "--minilm" in sys.argv or "--minilm" in sys.argv
@@ -82,7 +82,7 @@ def main():
         use_minilm = "--tfidf" not in sys.argv
         args = [a for a in sys.argv[3:] if a != "--tfidf"]
         query = " ".join(args)
-        from memory.ggm import TfidfSvdEmbedder, MiniLMEmbedder, GGMConfig
+        from ggm import TfidfSvdEmbedder, MiniLMEmbedder, GGMConfig
         cfg = GGMConfig()
         try:
             emb = MiniLMEmbedder() if use_minilm else TfidfSvdEmbedder(cfg.d_model)
