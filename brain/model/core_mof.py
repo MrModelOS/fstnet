@@ -39,10 +39,11 @@ class BitLinear(nn.Module):
 
 
 class ContinuousField(nn.Module):
-    def __init__(self, in_features, out_features, n_fields, field_rank):
+    def __init__(self, in_features, out_features, n_fields, field_rank, binarize=0.0):
         super().__init__()
         self.U = nn.Parameter(torch.empty(n_fields, in_features, field_rank))
         self.V = nn.Parameter(torch.empty(n_fields, field_rank, out_features))
+        self.binarize = binarize
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -55,11 +56,18 @@ class ContinuousField(nn.Module):
         # out = sum_k alpha*((x@U[k])@V[k]) ТАЧФ.
         b, t, i = x.shape
         n, r = self.U.shape[0], self.U.shape[2]
+        if self.binarize > 0:
+            sU = self.U.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,r)
+            sV = self.V.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,o)
+            Uq = (1 - self.binarize) * self.U + self.binarize * (ste_sign(self.U) * sU)
+            Vq = (1 - self.binarize) * self.V + self.binarize * (ste_sign(self.V) * sV)
+        else:
+            Uq, Vq = self.U, self.V
         x2 = x.reshape(-1, i)                                        # (b*t, i)
-        Uf = self.U.transpose(0, 1).reshape(i, -1)                   # (i, n*r) = U[0]|U[1]|..|U[n-1] колонками
+        Uf = Uq.transpose(0, 1).reshape(i, -1)                       # (i, n*r) = U[0]|U[1]|..|U[n-1] колонками
         H = x2 @ Uf                                                  # (b*t, n*r)
         H = H.view(-1, n, r) * alpha.reshape(-1, n, 1)               # взвесить alpha (b*t,n,1)
-        out = H.view(-1, n * r) @ self.V.reshape(n * r, -1)          # (b*t, o)
+        out = H.view(-1, n * r) @ Vq.reshape(n * r, -1)              # (b*t, o)
         return out.view(b, t, -1)
 
     def orth_loss(self):
@@ -233,6 +241,8 @@ class FSTMoFModel(nn.Module):
     def set_binarize(self, ratio):
         for m in self.modules():
             if isinstance(m, BitLinear):
+                m.binarize = ratio
+            elif isinstance(m, ContinuousField):
                 m.binarize = ratio
 
     @torch.no_grad()
