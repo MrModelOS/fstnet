@@ -106,7 +106,11 @@ class AsyncUploader:
                 return
             local, drive = job
             try:
+                if not os.path.isfile(local) or os.path.getsize(local) == 0:
+                    log(f"[upload] {drive}: пропуск — нет {local} (файл удалён/не создан)")
+                    continue
                 part = drive + ".part"
+                os.makedirs(os.path.dirname(part), exist_ok=True)
                 shutil.copyfile(local, part)
                 os.replace(part, drive)
             except Exception as e:
