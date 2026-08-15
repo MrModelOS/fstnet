@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.join(_ROOT, "brain"))
 sys.path.insert(0, os.path.join(_ROOT, "brain", "model"))
 
 from config_3b_mof import FSTMoFConfig
-from colab_drive import setup_checkpoint_dir
+from colab_drive import setup_checkpoint_dir, load_checkpoint
 
 
 def log(m): print(m, flush=True)
@@ -136,7 +136,7 @@ def main():
         sys.exit(1)
 
     log(f"Loading {src}")
-    ck = torch.load(src, map_location="cpu", weights_only=False)
+    ck = load_checkpoint(src)
     sd = ck["model_state"]
     cfg = ck.get("config") or FSTMoFConfig()
 

@@ -57,7 +57,7 @@ if STAGE not in (1, 2):
     raise ValueError("FSTNET_STAGE должен быть 1 или 2")
 log(f"STAGE={STAGE}")
 
-from colab_drive import setup_checkpoint_dir
+from colab_drive import setup_checkpoint_dir, save_checkpoint, load_checkpoint
 STAGE1_SUBDIR = "3b_mof"
 CKPT_DIR = setup_checkpoint_dir(subdir=STAGE1_SUBDIR if STAGE == 1 else "3b_mof_stage2")
 CONTENT = "/content" if os.path.isdir("/content") else CKPT_DIR
@@ -235,7 +235,7 @@ if STAGE == 2:
 else:
     src = pick_source(CKPT_DRIVE, CKPT_LOCAL)
 if src:
-    ck = torch.load(src, map_location="cpu", weights_only=False)
+    ck = load_checkpoint(src)
     model.load_state_dict(ck["model_state"])
     start_step = ck.get("step", 0)
     log(f"Resumed from {src} (step {start_step})")
@@ -534,7 +534,7 @@ for epoch in range(EPOCHS):
 
         if it > 0 and it % 500 == 0:
             state = {"step": step, "model_state": model.state_dict(), "config": cfg}
-            torch.save(state, CKPT_LOCAL)
+            save_checkpoint(CKPT_LOCAL, state)
             uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
             log(f"  >> autosave (batch {it})")
             model.eval()
@@ -550,13 +550,13 @@ for epoch in range(EPOCHS):
             log(f"  VAL CE: {val_avg:.4f} (n={vn})")
             if val_avg < best_val:
                 best_val = val_avg
-                torch.save(state, CKPT_LOCAL)
+                save_checkpoint(CKPT_LOCAL, state)
                 uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
                 log(f"  >> best saved (val {best_val:.4f})")
             model.train()
 
 state = {"step": step, "model_state": model.state_dict(), "config": cfg}
-torch.save(state, FINAl_LOCAL)
+save_checkpoint(FINAl_LOCAL, state)
 uploader.submit(FINAl_LOCAL, os.path.join(CKPT_DIR, "final.pt"))
 log(f"DONE. Step={step}, best_val={best_val:.4f}")
 log(f"Следующее: 1-bit export (S3) + bitnet.cpp fork (см. SPEC_3B_MOF.md).")

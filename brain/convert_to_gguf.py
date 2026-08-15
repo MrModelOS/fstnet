@@ -17,10 +17,13 @@ import json
 import numpy as np
 import torch
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from colab_drive import load_checkpoint
+
 
 def load_fstnet(path):
     """Загружает FST-Net checkpoint и возвращает (state_dict, config)."""
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    ckpt = load_checkpoint(path)
     sd = ckpt["model_state"]
     cfg = ckpt.get("config", None)
     return sd, cfg

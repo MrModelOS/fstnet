@@ -40,6 +40,7 @@ from tokenizers import Tokenizer
 
 from paged_kv import ModelPagedRunner
 from sampler import sample, JsonSchemaMask
+from colab_drive import load_checkpoint
 
 PORT = int(os.environ.get("FSTNET_PORT", "8765"))
 UNIX_SOCK = os.environ.get("FSTNET_UNIX", "").strip()
@@ -64,7 +65,7 @@ def find_ckpt():
 def load_model():
     path = find_ckpt()
     print(f"Loading {path}...", flush=True)
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    ckpt = load_checkpoint(path)
     cfg = ckpt["config"]
     from model.core_mof import FSTMoFModel
     model = FSTMoFModel(cfg)

@@ -33,7 +33,7 @@ def log(msg): print(msg, flush=True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from colab_drive import setup_checkpoint_dir
+from colab_drive import setup_checkpoint_dir, save_checkpoint, load_checkpoint
 CKPT_DIR = setup_checkpoint_dir(subdir="800m")
 CKPT_DRIVE = os.path.join(CKPT_DIR, "best.pt")
 CKPT_LOCAL = "/content/best_800m.pt"
@@ -81,7 +81,7 @@ model = FSTNetCore(cfg)
 src = pick_source(CKPT_DRIVE, CKPT_LOCAL)
 start_step = 0
 if src:
-    ck = torch.load(src, map_location="cpu", weights_only=False)
+    ck = load_checkpoint(src)
     model.load_checkpoint_into(ck["model_state"])
     start_step = ck.get("step", 0)
     log(f"Resumed from {src} (step {start_step})")
@@ -269,7 +269,7 @@ for epoch in range(EPOCHS):
             if val_avg < best_val:
                 best_val = val_avg
                 state = {"step": step, "model_state": model.state_dict(), "config": cfg}
-                torch.save(state, CKPT_LOCAL)
+                save_checkpoint(CKPT_LOCAL, state)
                 import shutil
                 shutil.copyfile(CKPT_LOCAL, CKPT_DRIVE)
                 log(f"  >> best saved (val {best_val:.4f})")
@@ -277,7 +277,7 @@ for epoch in range(EPOCHS):
 
 import shutil
 state = {"step": step, "model_state": model.state_dict(), "config": cfg}
-torch.save(state, FINAL_LOCAL)
+save_checkpoint(FINAL_LOCAL, state)
 shutil.copyfile(FINAL_LOCAL, os.path.join(CKPT_DIR, "final.pt"))
 log(f"DONE. Final step={step}, best_val={best_val:.4f}")
 log(f"Activate JARVIS: конвертируй {CKPT_DRIVE} в GGUF Q8_0 и загрузи в Ollama.")

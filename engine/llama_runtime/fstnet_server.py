@@ -24,6 +24,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "brain"))
 TOKENIZER_PATH = os.path.join(_HERE, "..", "brain", "tokenizer", "fst_bpe.json")
 
+from colab_drive import load_checkpoint
+
 # ── Config ──────────────────────────────────────────────
 MODEL_PATH = os.environ.get("FSTNET_MODEL", "checkpoints/800m/best.pt")
 MCP_URL = "http://localhost:8765/mcp"
@@ -36,7 +38,7 @@ print(f"Loading model from {MODEL_PATH}...", flush=True)
 from config_800m import FSTConfig800M
 from model.core import FSTNetCore
 
-ckpt = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
+ckpt = load_checkpoint(MODEL_PATH)
 config = ckpt.get("config", FSTConfig800M())
 model = FSTNetCore(config)
 sd = {k: v for k, v in ckpt["model_state"].items() if "causal_mask" not in k}

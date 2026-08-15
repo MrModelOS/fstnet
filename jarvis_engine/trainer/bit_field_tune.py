@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.join(_ROOT, "brain", "model"))
 from config_3b_mof import FSTMoFConfig
 from model.core_mof import FSTMoFModel
 from ste_optimizer import Adafactor
-from colab_drive import setup_checkpoint_dir, mount_drive
+from colab_drive import setup_checkpoint_dir, mount_drive, save_checkpoint, load_checkpoint
 
 
 def log(m): print(m, flush=True)
@@ -99,7 +99,7 @@ local_src = os.path.join(CONTENT, f"best_3b_mof{'' if STAGE == 1 else '_stage2'}
 if not os.path.exists(src) and os.path.exists(local_src):
     src = local_src
 if os.path.exists(src):
-    ck = torch.load(src, map_location="cpu", weights_only=False)
+    ck = load_checkpoint(src)
     model.load_state_dict(ck["model_state"])
     log(f"Loaded {src} (step {ck.get('step', '?')})")
 else:
@@ -284,7 +284,7 @@ for it, (bx, by) in enumerate(pbar):
                 best_val = val_avg
                 state = {"step": step, "model_state": model.state_dict(), "config": cfg,
                          "quant": {"binarize": 1.0, "fields": True}}
-                torch.save(state, CKPT_LOCAL)
+                save_checkpoint(CKPT_LOCAL, state)
                 if device == "cuda":
                     def _up():
                         try:
@@ -297,9 +297,8 @@ for it, (bx, by) in enumerate(pbar):
                 log(f"  >> best 1bit saved (val {best_val:.4f})")
             model.train()
 
-torch.save({"step": step, "model_state": model.state_dict(), "config": cfg,
-            "quant": {"binarize": 1.0, "fields": True}},
-           CKPT_LOCAL)
+save_checkpoint(CKPT_LOCAL, {"step": step, "model_state": model.state_dict(), "config": cfg,
+             "quant": {"binarize": 1.0, "fields": True}})
 try:
     os.makedirs(os.path.dirname(CKPT_DRIVE), exist_ok=True)
     shutil.copyfile(CKPT_LOCAL, CKPT_DRIVE)

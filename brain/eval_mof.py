@@ -24,6 +24,7 @@ def log(msg): print(msg, flush=True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from colab_drive import load_checkpoint
 from config_3b_mof import FSTMoFConfig
 from model.core_mof import FSTMoFModel
 from tokenizers import Tokenizer
@@ -53,7 +54,7 @@ def main():
         sys.exit(1)
 
     cfg = FSTMoFConfig()
-    ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    ck = load_checkpoint(args.ckpt)
     cfg_ck = ck.get("config", None)
     if cfg_ck is not None:
         for k, v in vars(cfg_ck).items():
