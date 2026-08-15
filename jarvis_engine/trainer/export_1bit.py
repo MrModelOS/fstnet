@@ -4,6 +4,8 @@
 Берёт чекпоинт (лучше moF_best_1bit.pt после bit_field_tune.py) и пакует:
   - BitLinear.weight     -> sign(w) упакован в uint32 (1 bit/вес) + scale fp16
   - ContinuousField U/V  -> sign(U)/sign(V) в uint32 + scale fp16
+  - head.weight          -> int8 (sym, per-row scale) — точнее 1-bit,
+                            в 2x меньше fp16
   - эмбеддинг/hypernet/RMSNorm -> fp16 (не бинаризуются архитектурой)
 
 Итог ~543MB для 3.4B (BitLinear ~213MB + поля ~200MB + прочее fp16).
@@ -18,6 +20,7 @@
     "config": FSTMoFConfig,
     "packed": { "<name>": {"bits": uint32 tensor (..., 32x меньше), "scale": fp16 tensor} },
     "fp16":   { "<name>": fp16 tensor },        # embedding, hypernet, norms
+    "int8":   { "<name>": {"q": int8 tensor, "scale": fp16 tensor} },  # head
     "quant":  {"binarize": 1.0, "fields": True}
   }
 
@@ -72,8 +75,25 @@ def row_scale(t: torch.Tensor, dim=1):
     return t.abs().mean(dim=dim, keepdim=True).clamp_min(1e-12)
 
 
+def pack_int8(t: torch.Tensor, scale_dim=1):
+    """Симметричная per-row int8 квантизация: q = round(w / (max|.|/127)).
+
+    Возвращает (int8 tensor, scale fp16). scale_dim=1: head (vocab, dim)
+    квантизуется по выходным каналам — как row_scale в forward.
+    """
+    w = t.float()
+    s = w.abs().max(dim=scale_dim, keepdim=True).values.clamp_min(1e-12) / 127.0
+    q = torch.round(w / s).clamp(-127, 127).to(torch.int8)
+    return q, s.half()
+
+
+def unpack_int8(q: torch.Tensor, scale, device=None, dtype=torch.float32):
+    """Обратно: int8 + scale -> float."""
+    return q.to(dtype).to(device) * scale.to(dtype).to(device)
+
+
 def pack_model(state, cfg: FSTMoFConfig):
-    packed, fp16 = {}, {}
+    packed, fp16, int8 = {}, {}, {}
     quant_bits = 0
     quant_head = bool(getattr(cfg, "quant_head", False))
     for name, t in state.items():
@@ -91,24 +111,31 @@ def pack_model(state, cfg: FSTMoFConfig):
             s = row_scale(w, dim=1)
             packed[name] = {"bits": pack_sign(w), "scale": s.half(), "shape": tuple(w.shape)}
             quant_bits += t.numel()
+        elif name == "head.weight":
+            # Head обучается в fp16 (nn.Linear) — при экспорте пакуем в int8:
+            # точнее 1-bit, в 2 раза меньше fp16, ошибка ~0.4% на канал.
+            q, s = pack_int8(t)
+            int8[name] = {"q": q, "scale": s}
         elif ".scale" in name:
             fp16[name] = t.half()
         else:
             fp16[name] = t.half()
-    return packed, fp16, quant_bits
+    return packed, fp16, int8, quant_bits
 
 
-def bytes_of(packed, fp16):
+def bytes_of(packed, fp16, int8):
     b = 0
     for d in packed.values():
         b += d["bits"].numel() * 4 + d["scale"].numel() * 2
     for t in fp16.values():
         b += t.numel() * 2
+    for d in int8.values():
+        b += d["q"].numel() * 1 + d["scale"].numel() * 2
     return b
 
 
-def load_1bit(model, packed, fp16, device=None, dtype=torch.float32):
-    """Раскладывает 1-bit дистрибутив в state_dict модели (для инференса)."""
+def load_1bit(model, packed, fp16, int8=None, device=None, dtype=torch.float32):
+    """Раскладывает дистрибутив (1-bit + fp16 + int8) в state_dict модели."""
     sd = {}
     for name, t in fp16.items():
         sd[name] = t.to(dtype)
@@ -116,6 +143,8 @@ def load_1bit(model, packed, fp16, device=None, dtype=torch.float32):
         shape = tuple(d["shape"])
         w = unpack_sign(d["bits"], shape, dtype=dtype) * d["scale"].to(dtype)
         sd[name] = w
+    for name, d in (int8 or {}).items():
+        sd[name] = unpack_int8(d["q"], d["scale"], dtype=dtype)
     model.load_state_dict(sd, strict=False)
     if device:
         model.to(device)
@@ -158,12 +187,12 @@ def main():
     log(f"Параметры: 1-bit {n_bit/1e9:.2f}B, fp16 {n_other/1e9:.2f}B, "
         f"итого {(n_bit+n_other)/1e9:.2f}B")
 
-    packed, fp16, quant_bits = pack_model(sd, cfg)
-    nbytes = bytes_of(packed, fp16)
+    packed, fp16, int8, quant_bits = pack_model(sd, cfg)
+    nbytes = bytes_of(packed, fp16, int8)
     log(f"1-bit весов: {quant_bits/1e9:.2f}B -> упаковано, "
         f"суммарный размер: {nbytes/1e6:.0f}MB")
 
-    out = {"config": cfg, "packed": packed, "fp16": fp16,
+    out = {"config": cfg, "packed": packed, "fp16": fp16, "int8": int8,
            "quant": {"binarize": 1.0, "fields": True}}
     local = os.path.join("/content", f"model_1bit{'' if STAGE == 1 else '_stage2'}.pt")
     torch.save(out, local)
