@@ -75,10 +75,11 @@ def row_scale(t: torch.Tensor, dim=1):
 def pack_model(state, cfg: FSTMoFConfig):
     packed, fp16 = {}, {}
     quant_bits = 0
+    quant_head = bool(getattr(cfg, "quant_head", False))
     for name, t in state.items():
-        if name.endswith(".weight") and (".W0" in name or name in (
-                "head.weight",) or ".Wq" in name or ".Wk" in name
-                or ".Wv" in name or ".Wo" in name):
+        if name.endswith(".weight") and (".W0" in name or ".Wq" in name
+                or ".Wk" in name or ".Wv" in name or ".Wo" in name) \
+                or (name == "head.weight" and quant_head):
             # BitLinear
             w = t.float()
             s = w.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)
@@ -147,7 +148,8 @@ def main():
     # печатаем распределение по типам
     n_bit, n_other = 0, 0
     for k, v in sd.items():
-        if (k.endswith(".weight") and (".W0" in k or k == "head.weight"
+        if (k.endswith(".weight") and (".W0" in k
+                or (k == "head.weight" and getattr(cfg, "quant_head", False))
                 or ".Wq" in k or ".Wk" in k or ".Wv" in k or ".Wo" in k)) \
                 or k.endswith(".U") or k.endswith(".V"):
             n_bit += v.numel()

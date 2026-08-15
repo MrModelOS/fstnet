@@ -252,7 +252,15 @@ else:
     src = pick_source(CKPT_DRIVE, CKPT_LOCAL)
 if src:
     ck = load_checkpoint(src)
-    model.load_state_dict(ck["model_state"])
+    ms = ck["model_state"]
+    # Совместимость со старыми чекпоинтами, где head был BitLinear
+    # (head.weight + head.scale). Новая модель — nn.Linear head без scale.
+    if "head.scale" in ms and not getattr(cfg, "quant_head", False):
+        log("[WARN] Чекпоинт со старым BitLinear head. Убираю head.scale; "
+            "head.weight переносится как обычный Linear.")
+        ms = {k: v for k, v in ms.items()
+              if k not in ("head.scale", "head.bias")}
+    model.load_state_dict(ms)
     start_step = ck.get("step", 0)
     log(f"Resumed from {src} (step {start_step})")
 else:

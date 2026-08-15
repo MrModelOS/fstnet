@@ -112,7 +112,11 @@ if not os.path.exists(src) and os.path.exists(local_src):
     src = local_src
 if os.path.exists(src):
     ck = load_checkpoint(src)
-    model.load_state_dict(ck["model_state"])
+    ms = ck["model_state"]
+    if "head.scale" in ms and not getattr(cfg, "quant_head", False):
+        log("[WARN] Старый BitLinear head -> убираю head.scale/head.bias")
+        ms = {k: v for k, v in ms.items() if k not in ("head.scale", "head.bias")}
+    model.load_state_dict(ms)
     log(f"Loaded {src} (step {ck.get('step', '?')})")
 else:
     log(f"[FAIL] чекпоинт не найден: {src}")

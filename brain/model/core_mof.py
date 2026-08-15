@@ -137,11 +137,9 @@ class GQAAttention(nn.Module):
         q = q.transpose(1, 2)
         k = k.transpose(1, 2).repeat_interleave(rep, dim=1)
         v = v.transpose(1, 2).repeat_interleave(rep, dim=1)
-        s = (q @ k.transpose(-2, -1)) / math.sqrt(self.bs.head_dim)
-        if mask is not None:
-            s = s + mask
-        a = F.softmax(s, dim=-1)
-        o = (a @ v).transpose(1, 2)
+        # SDPA: FlashAttention-2 на sm_80+, на T4 (sm_75) — mem-efficient fallback.
+        o = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        o = o.transpose(1, 2)
         o = o.reshape(b, t, -1)
         return self.Wo(o)
 
@@ -214,7 +212,8 @@ class FSTMoFModel(nn.Module):
         self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.dim)
         self.blocks = nn.ModuleList(TransformerBlock(cfg, i) for i in range(cfg.n_layers))
         self.norm = RMSNorm(cfg.dim)
-        self.head = BitLinear(cfg.dim, cfg.vocab_size)
+        self.head = (BitLinear(cfg.dim, cfg.vocab_size) if getattr(cfg, "quant_head", False)
+                     else nn.Linear(cfg.dim, cfg.vocab_size, bias=False))
         self.register_buffer("freqs", precompute_rope(cfg.head_dim, cfg.max_seq_len, cfg.rope_base))
         self.apply(self._init_)
 

@@ -27,6 +27,7 @@ class FSTMoFConfig:
     binarize_ratio: float = 1.0
     grad_ckpt: bool = False
 
+    quant_head: bool = False  # True -> head (output proj) тоже в 1-bit; False -> fp16 (точнее, +~130MB)
     init_std: float = 0.02
     hidden_alpha: int = 512
 
