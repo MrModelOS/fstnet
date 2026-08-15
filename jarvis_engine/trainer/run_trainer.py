@@ -446,7 +446,16 @@ def lr_fn(s):
 sch = torch.optim.lr_scheduler.LambdaLR(opt, lr_fn)
 crit = nn.CrossEntropyLoss(ignore_index=IGNORE, reduction="sum")
 
-if os.environ.get("FSTNET_COMPILE", "").strip() not in ("", "0"):
+COMPILE = os.environ.get("FSTNET_COMPILE", "").strip()
+if cap < 8:
+    # T4 (sm_7): torch.compile ~час компилирует первый батч и держит лишние
+    # буферы -> OOM на backward (веса+грады 13.2GB из 14.56GB). Игнорируем
+    # FSTNET_COMPILE всегда, чтобы залипший env в сессии не ломал запуск.
+    if COMPILE not in ("", "0"):
+        log(f"[WARN] FSTNET_COMPILE={COMPILE} игнорируется: на sm_{cap} "
+            "torch.compile даёт OOM. Обучение без compile.")
+    COMPILE = ""
+if COMPILE not in ("", "0"):
     try:
         if device == "cuda":
             model = torch.compile(model, dynamic=True)
