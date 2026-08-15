@@ -532,11 +532,11 @@ for epoch in range(EPOCHS):
                 f"β {curr_ratio:.2f} | LR {sch.get_last_lr()[0]:.2e} | "
                 f"{mm.report()} | ETA {eta/60:.0f}min")
 
-        if step % 500 == 0 and step > 0:
+        if it > 0 and it % 500 == 0:
             state = {"step": step, "model_state": model.state_dict(), "config": cfg}
             torch.save(state, CKPT_LOCAL)
             uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
-            log(f"  >> autosave (step {step})")
+            log(f"  >> autosave (batch {it})")
             model.eval()
             vl, vn = 0.0, 0
             with torch.no_grad():
