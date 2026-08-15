@@ -6,7 +6,10 @@ checkpoints/
 *.safetensors
 
 # Data
-data/
+data/*
+!data/*.json.gz
+!data/*.json.gz.part*
+brain/data/
 *.db
 
 # Logs

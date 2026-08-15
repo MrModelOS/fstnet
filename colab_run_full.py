@@ -39,6 +39,7 @@ JARVIS_COUNT (200K синтетики Stage 1), JARVIS_COUNT_SPEC (500K Stage 2)
 import os
 import sys
 import time
+import gzip
 import shutil
 import subprocess
 
@@ -149,7 +150,16 @@ def sync_file(local, drive):
 
 
 def ensure_data(name, drive, build, local_ok=True):
-    """Возвращает локальный путь к датасету (из repo/Диска/сборки), синхронизирует на Диск."""
+    """Возвращает локальный путь к датасету.
+
+    Приоритет источников:
+      1. локальный файл в data/ (уже есть)
+      2. Google Диск (drive)
+      3. git-архив data/<name>.gz — распаковка (источник истины в репо,
+         чтобы не генерить долго в каждой сессии)
+      4. сборка с нуля (build())
+    Затем синхронизация локального файла на Диск.
+    """
     local = os.path.join(DATA, name)
     if local_ok and os.path.exists(local) and os.path.getsize(local) > 1_000_000:
         log(f"Датасет уже есть: {local} ({os.path.getsize(local)/1e6:.0f}MB)")
@@ -158,10 +168,25 @@ def ensure_data(name, drive, build, local_ok=True):
         os.makedirs(DATA, exist_ok=True)
         shutil.copyfile(drive, local)
     else:
-        log(f"Датасета {name} нет нигде — собираю.")
-        build()
-        if not (os.path.exists(local) and os.path.getsize(local) > 1_000_000):
-            raise SystemExit(f"[FAIL] Сборка {name} не дала результата.")
+        archive = os.path.join(DATA, name + ".gz")
+        parts = sorted(p for p in os.listdir(DATA) if p.startswith(name + ".gz.part"))
+        if parts:
+            log(f"Склеиваю части git-архива: {len(parts)} шт -> {archive}")
+            with open(archive, "wb") as fo:
+                for p in parts:
+                    with open(os.path.join(DATA, p), "rb") as fi:
+                        shutil.copyfileobj(fi, fo)
+        if os.path.exists(archive):
+            log(f"Распаковываю из git: {archive} -> {local}")
+            os.makedirs(DATA, exist_ok=True)
+            with gzip.open(archive, "rb") as gz, open(local, "wb") as f:
+                shutil.copyfileobj(gz, f)
+            log(f"  распакован ({os.path.getsize(local)/1e6:.0f}MB)")
+        else:
+            log(f"Датасета {name} нет нигде (git-архив {archive} тоже) — собираю.")
+            build()
+            if not (os.path.exists(local) and os.path.getsize(local) > 1_000_000):
+                raise SystemExit(f"[FAIL] Сборка {name} не дала результата.")
     sync_file(local, drive)
     return local
 
