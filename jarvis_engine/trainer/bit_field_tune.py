@@ -33,8 +33,16 @@ if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
 import numpy as np
 import torch
 import torch.nn as nn
+import contextlib
 from numpy.lib import format as npyfmt
 from tqdm import tqdm
+
+try:
+    from torch.amp import GradScaler, autocast  # torch>=2.3
+    _AMP_DTYPE_KW = {"device_type": "cuda", "dtype": torch.float16}
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast  # torch<2.3
+    _AMP_DTYPE_KW = {"dtype": torch.float16}
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _THIS)
@@ -71,7 +79,11 @@ log(f"STAGE={STAGE} tune_steps={TUNE_STEPS} lr={LEARN_RATE:.1e} "
 device = "cuda" if torch.cuda.is_available() else "cpu"
 cap = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 0
 COMPUTE_DTYPE = (torch.bfloat16 if cap >= 8 else torch.float16) if device == "cuda" else torch.float32
-log(f"device={device} sm_{cap}; dtype={COMPUTE_DTYPE}")
+USE_SCALER = device == "cuda" and COMPUTE_DTYPE == torch.float16 and \
+    os.environ.get("FSTNET_SCALER", "1") != "0"
+scaler = GradScaler() if USE_SCALER else None
+log(f"device={device} sm_{cap}; dtype={COMPUTE_DTYPE}"
+    f" ({'GradScaler ON' if USE_SCALER else 'без GradScaler'})")
 
 cfg = FSTMoFConfig()
 for k in ("vocab_size", "dim", "n_layers", "n_heads", "n_kv_heads", "d_ff",
@@ -250,12 +262,21 @@ pbar = tqdm(train_loader, desc="TUNE", total=total_batches * ACCUM, unit="batch"
 opt.zero_grad(set_to_none=True)
 for it, (bx, by) in enumerate(pbar):
     bx, by = bx.to(device, non_blocking=True), by.to(device, non_blocking=True)
-    logits, ce = model(bx, by)
-    orth = model.orth_loss()
-    loss = (ce + cfg.orth_scale * orth) / ACCUM
-    loss.backward()
+    with autocast(**_AMP_DTYPE_KW) if device == "cuda" else contextlib.nullcontext():
+        logits, ce = model(bx, by)
+        orth = model.orth_loss()
+        loss = (ce + cfg.orth_scale * orth) / ACCUM
+    loss = loss.float()
+    if scaler is not None:
+        scaler.scale(loss).backward()
+    else:
+        loss.backward()
     if (it + 1) % ACCUM == 0:
-        opt.step()
+        if scaler is not None:
+            scaler.step(opt)
+            scaler.update()
+        else:
+            opt.step()
         opt.zero_grad(set_to_none=True)
         sch.step()
         step += 1

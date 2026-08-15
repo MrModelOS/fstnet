@@ -130,8 +130,16 @@ import torch
 import torch.nn as nn
 import zipfile
 import io
+import contextlib
 from numpy.lib import format as npyfmt
 from tqdm import tqdm
+
+try:
+    from torch.amp import GradScaler, autocast  # torch>=2.3
+    _AMP_DTYPE_KW = {"device_type": "cuda", "dtype": torch.float16}
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast  # torch<2.3
+    _AMP_DTYPE_KW = {"dtype": torch.float16}
 
 from config_3b_mof import FSTMoFConfig
 from model.core_mof import FSTMoFModel
@@ -219,7 +227,11 @@ if device == "cuda":
     COMPUTE_DTYPE = torch.bfloat16 if cap >= 8 else torch.float16
 else:
     COMPUTE_DTYPE = torch.float32
-log(f"device={device} sm_{cap}; модель в {COMPUTE_DTYPE} (Adafactor, без GradScaler)")
+USE_SCALER = device == "cuda" and COMPUTE_DTYPE == torch.float16 and \
+    os.environ.get("FSTNET_SCALER", "1") != "0"
+scaler = GradScaler() if USE_SCALER else None
+log(f"device={device} sm_{cap}; модель в {COMPUTE_DTYPE} "
+    f"(Adafactor, {'GradScaler ON' if USE_SCALER else 'без GradScaler'})")
 torch.set_default_dtype(COMPUTE_DTYPE)  # создаём сразу в fp16/bf16: 3.4B fp32 на CPU = OOM (~13.6GB)
 model = FSTMoFModel(cfg).to(device=device)
 torch.set_default_dtype(torch.float32)
@@ -502,16 +514,23 @@ for epoch in range(EPOCHS):
         p = step / max(1, total_steps)
         freeze = p > 0.6
         apply_phase(p, freeze_w0=freeze)
-        logits, ce = model(bx, by)
-        ls = ce
-        use_orth = STAGE == 2 or p > 0.6
-        orth = model.orth_loss() if use_orth else None
-        loss = ls + cfg.orth_scale * orth if use_orth else ls
-        loss = loss / ACCUM
+        with autocast(**_AMP_DTYPE_KW) if device == "cuda" else contextlib.nullcontext():
+            logits, ce = model(bx, by)
+            use_orth = STAGE == 2 or p > 0.6
+            orth = model.orth_loss() if use_orth else None
+            loss = ce + cfg.orth_scale * orth if use_orth else ce
+        loss = loss.float() / ACCUM  # fp32: GradScaler масштабирует loss, поднимая fp16-градиенты Sign(W) из underflow
         mm.before_backward()
-        loss.backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         if (it + 1) % ACCUM == 0:
-            opt.step()
+            if scaler is not None:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
             opt.zero_grad(set_to_none=True)
             sch.step()
             mm.after_step()
