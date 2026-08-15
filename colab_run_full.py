@@ -195,7 +195,9 @@ def train_env(extra):
     env = dict(os.environ)
     env.setdefault("FSTNET_EPOCHS", str(EPOCHS))
     env.setdefault("FSTNET_LR", LR)
-    env.setdefault("FSTNET_COMPILE", "1")
+    # FSTNET_COMPILE НЕ включаем по умолчанию: torch.compile на T4 съедает
+    # ~час на компиляцию первого батча и даёт OOM (веса+грады 13.2GB из 16GB).
+    # Включить вручную: RUN_COMPILE=1 (или FSTNET_COMPILE=1 в ячейке).
     if drive_mounted():
         env.setdefault("FSTNET_CKPT_DIR", DRIVE_CKPT)
     env.update(extra)

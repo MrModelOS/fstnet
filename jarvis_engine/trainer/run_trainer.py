@@ -477,6 +477,8 @@ model.train()
 log(f"Training: {total_steps} steps | batch={BATCH} accum={ACCUM} (eff {BATCH*ACCUM}) | "
     f"lr={LEARN_RATE:.1e} | EPOCHS={EPOCHS} | seq={SEQ} | fields={cfg.n_fields} topk={cfg.gating_top_k}")
 
+last_pulse = time.time()
+PULSE = float(os.environ.get("FSTNET_PROGRESS_SEC", "15"))
 for epoch in range(EPOCHS):
     pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}",
                 total=len(train_loader), unit="batch")
@@ -502,6 +504,15 @@ for epoch in range(EPOCHS):
             mm.after_step()
             step += 1
             pbar.set_postfix(opt=f"{step}/{total_steps}")
+
+        now = time.time()
+        if now - last_pulse >= PULSE:
+            last_pulse = now
+            el = now - t0
+            eta = el / max(step - step0, 1) * (total_steps - step)
+            log(f"  [pulse {it+1}/{len(train_loader)} батч] opt {step}/{total_steps} "
+                f"({100*step/max(total_steps,1):.1f}%) | CE {ce.item():.4f} | "
+                f"ETA {eta/60:.0f}min")
 
         if step % 25 == 0 and (it + 1) % ACCUM == 0:
             el = time.time() - t0
