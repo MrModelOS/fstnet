@@ -135,10 +135,10 @@ from numpy.lib import format as npyfmt
 from tqdm import tqdm
 
 try:
-    from torch.amp import GradScaler, autocast  # torch>=2.3
+    from torch.amp import autocast  # torch>=2.3
     _AMP_DTYPE_KW = {"device_type": "cuda", "dtype": torch.float16}
 except ImportError:
-    from torch.cuda.amp import GradScaler, autocast  # torch<2.3
+    from torch.cuda.amp import autocast  # torch<2.3
     _AMP_DTYPE_KW = {"dtype": torch.float16}
 
 from config_3b_mof import FSTMoFConfig
@@ -229,9 +229,17 @@ else:
     COMPUTE_DTYPE = torch.float32
 USE_SCALER = device == "cuda" and COMPUTE_DTYPE == torch.float16 and \
     os.environ.get("FSTNET_SCALER", "1") != "0"
-scaler = GradScaler() if USE_SCALER else None
+# Параметры fp16 => градиенты fp16; GradScaler с ними несовместим
+# (unscale требует fp32, а fp32-грады = OOM на T4). Вместо него — ручное
+# масштабирование loss степенью двойки: backward считает крупные градиенты
+# (не подтекают в underflow), затем грады точно делятся обратно (÷2^k в fp16
+# без округления). FSTNET_LOSS_SCALE переопределяет множитель (0/1 = выкл).
+if USE_SCALER:
+    LOSS_SCALE = float(os.environ.get("FSTNET_LOSS_SCALE", "4096"))
+else:
+    LOSS_SCALE = 1.0
 log(f"device={device} sm_{cap}; модель в {COMPUTE_DTYPE} "
-    f"(Adafactor, {'GradScaler ON' if USE_SCALER else 'без GradScaler'})")
+    f"(Adafactor, {'loss-scale x%.0f' % LOSS_SCALE if USE_SCALER else 'без масштабирования loss'})")
 torch.set_default_dtype(COMPUTE_DTYPE)  # создаём сразу в fp16/bf16: 3.4B fp32 на CPU = OOM (~13.6GB)
 model = FSTMoFModel(cfg).to(device=device)
 torch.set_default_dtype(torch.float32)
@@ -528,18 +536,17 @@ for epoch in range(EPOCHS):
             use_orth = STAGE == 2 or p > 0.6
             orth = model.orth_loss() if use_orth else None
             loss = ce + cfg.orth_scale * orth if use_orth else ce
-        loss = loss.float() / ACCUM  # fp32: GradScaler масштабирует loss, поднимая fp16-градиенты Sign(W) из underflow
+        loss = loss.float() / ACCUM  # fp32
+        if LOSS_SCALE > 1:
+            loss = loss * LOSS_SCALE  # поднимает fp16-градиенты Sign(W) из underflow
         mm.before_backward()
-        if scaler is not None:
-            scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        loss.backward()
         if (it + 1) % ACCUM == 0:
-            if scaler is not None:
-                scaler.step(opt)
-                scaler.update()
-            else:
-                opt.step()
+            if LOSS_SCALE > 1:
+                for p in model.parameters():
+                    if p.grad is not None:
+                        p.grad.div_(LOSS_SCALE)  # точное деление на степень 2
+            opt.step()
             opt.zero_grad(set_to_none=True)
             sch.step()
             mm.after_step()

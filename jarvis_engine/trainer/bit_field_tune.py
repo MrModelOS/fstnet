@@ -38,10 +38,10 @@ from numpy.lib import format as npyfmt
 from tqdm import tqdm
 
 try:
-    from torch.amp import GradScaler, autocast  # torch>=2.3
+    from torch.amp import autocast  # torch>=2.3
     _AMP_DTYPE_KW = {"device_type": "cuda", "dtype": torch.float16}
 except ImportError:
-    from torch.cuda.amp import GradScaler, autocast  # torch<2.3
+    from torch.cuda.amp import autocast  # torch<2.3
     _AMP_DTYPE_KW = {"dtype": torch.float16}
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
@@ -81,9 +81,15 @@ cap = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 0
 COMPUTE_DTYPE = (torch.bfloat16 if cap >= 8 else torch.float16) if device == "cuda" else torch.float32
 USE_SCALER = device == "cuda" and COMPUTE_DTYPE == torch.float16 and \
     os.environ.get("FSTNET_SCALER", "1") != "0"
-scaler = GradScaler() if USE_SCALER else None
+# Параметры fp16 => грады fp16, GradScaler несовместим (fp32-грады = OOM).
+# Ручное масштабирование loss степенью двойки: backward в крупных градиентах
+# (нет underflow), потом точное деление обратно перед opt.step.
+if USE_SCALER:
+    LOSS_SCALE = float(os.environ.get("FSTNET_LOSS_SCALE", "4096"))
+else:
+    LOSS_SCALE = 1.0
 log(f"device={device} sm_{cap}; dtype={COMPUTE_DTYPE}"
-    f" ({'GradScaler ON' if USE_SCALER else 'без GradScaler'})")
+    f" ({'loss-scale x%.0f' % LOSS_SCALE if USE_SCALER else 'без масштабирования loss'})")
 
 cfg = FSTMoFConfig()
 for k in ("vocab_size", "dim", "n_layers", "n_heads", "n_kv_heads", "d_ff",
@@ -271,16 +277,15 @@ for it, (bx, by) in enumerate(pbar):
         orth = model.orth_loss()
         loss = (ce + cfg.orth_scale * orth) / ACCUM
     loss = loss.float()
-    if scaler is not None:
-        scaler.scale(loss).backward()
-    else:
-        loss.backward()
+    if LOSS_SCALE > 1:
+        loss = loss * LOSS_SCALE  # поднимает fp16-градиенты из underflow
+    loss.backward()
     if (it + 1) % ACCUM == 0:
-        if scaler is not None:
-            scaler.step(opt)
-            scaler.update()
-        else:
-            opt.step()
+        if LOSS_SCALE > 1:
+            for p in model.parameters():
+                if p.grad is not None:
+                    p.grad.div_(LOSS_SCALE)  # точное деление на степень 2
+        opt.step()
         opt.zero_grad(set_to_none=True)
         sch.step()
         step += 1
