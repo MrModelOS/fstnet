@@ -505,6 +505,7 @@ t0 = time.time()
 best_val = float("inf")
 mm.reset()  # пик VRAM считать только с тренировочного цикла (не с создания модели)
 apply_phase(step / max(1, total_steps), freeze_w0=False)
+curr_ratio = model.blocks[0].ffn.W0g.binarize
 model.train()
 
 log(f"Training: {total_steps} steps | batch={BATCH} accum={ACCUM} (eff {BATCH*ACCUM}) | "
@@ -565,7 +566,8 @@ for epoch in range(EPOCHS):
 
         if it > 0 and it % 500 == 0:
             state = {"step": step, "model_state": model.state_dict(), "config": cfg}
-            save_checkpoint(CKPT_LOCAL, state)
+            save_checkpoint(CKPT_LOCAL, state, pack=curr_ratio >= 1.0,
+                            quant_head=getattr(cfg, "quant_head", False))
             uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
             log(f"  >> autosave (batch {it})")
             model.eval()
@@ -581,13 +583,15 @@ for epoch in range(EPOCHS):
             log(f"  VAL CE: {val_avg:.4f} (n={vn})")
             if val_avg < best_val:
                 best_val = val_avg
-                save_checkpoint(CKPT_LOCAL, state)
+                save_checkpoint(CKPT_LOCAL, state, pack=curr_ratio >= 1.0,
+                                quant_head=getattr(cfg, "quant_head", False))
                 uploader.submit(CKPT_LOCAL, CKPT_DRIVE)
                 log(f"  >> best saved (val {best_val:.4f})")
             model.train()
 
 state = {"step": step, "model_state": model.state_dict(), "config": cfg}
-save_checkpoint(FINAl_LOCAL, state)
+save_checkpoint(FINAl_LOCAL, state, pack=True,
+                quant_head=getattr(cfg, "quant_head", False))
 uploader.submit(FINAl_LOCAL, os.path.join(CKPT_DIR, "final.pt"))
 log(f"DONE. Step={step}, best_val={best_val:.4f}")
 log(f"Следующее: 1-bit export (S3) + bitnet.cpp fork (см. SPEC_3B_MOF.md).")

@@ -309,7 +309,7 @@ for it, (bx, by) in enumerate(pbar):
                 best_val = val_avg
                 state = {"step": step, "model_state": model.state_dict(), "config": cfg,
                          "quant": {"binarize": 1.0, "fields": True}}
-                save_checkpoint(CKPT_LOCAL, state)
+                save_checkpoint(CKPT_LOCAL, state, pack=True)
                 if device == "cuda":
                     def _up():
                         try:
@@ -323,7 +323,7 @@ for it, (bx, by) in enumerate(pbar):
             model.train()
 
 save_checkpoint(CKPT_LOCAL, {"step": step, "model_state": model.state_dict(), "config": cfg,
-             "quant": {"binarize": 1.0, "fields": True}})
+             "quant": {"binarize": 1.0, "fields": True}}, pack=True)
 try:
     os.makedirs(os.path.dirname(CKPT_DRIVE), exist_ok=True)
     shutil.copyfile(CKPT_LOCAL, CKPT_DRIVE)
