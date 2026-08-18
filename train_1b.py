@@ -267,28 +267,29 @@ if os.path.exists(CKPT_LOCAL):
 log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
     f"| 1-bit storage: {cfg.bytes_1bit()/1e6:.0f}MB")
 
-# torch.compile: kernel fusion. НЕ reduce-overhead — CUDA graphs держат
-# все 1900+ промежуточных буферов в VRAM (OOM на T4 16GB). Обычный mode.
-# grad checkpointing: ВЫКЛ по умолчанию — он ломает compile (graph break на
-# каждом блоке -> пересборка) и +30% времени. Для 1B VRAM хватает и без него.
+# torch.compile на T4 (sm_7): ~час компиляции первого батча + лишние
+# буферы -> OOM и медленные шаги (как в 3B run_trainer.py). По умолчанию
+# ВЫКЛ; включить только вручную через FSTNET_COMPILE.
+# grad checkpointing: ВЫКЛ (для 1B VRAM хватает).
 os.environ.setdefault("FSTNET_GRAD_CKPT", "0")
 from memory_manager import enable_if_env
 mm = enable_if_env(device=device)
 if mm.enabled:
     log("Gradient checkpointing ON (FSTNET_GRAD_CKPT)")
 mm.wrap_model(model)
-if device == "cuda":
-    _COMPILE = os.environ.get("FSTNET_COMPILE", "1").strip()
-    if _COMPILE in ("1", "true", "yes", "default"):
-        log("Compiling model (torch.compile default)...")
-        model = torch.compile(model, mode="default")
-        log("  compile done")
-    elif _COMPILE not in ("0", "false", "no"):
+
+_COMPILE = os.environ.get("FSTNET_COMPILE", "").strip()
+if cap < 8 and _COMPILE not in ("", "0"):
+    log(f"[WARN] FSTNET_COMPILE={_COMPILE} игнорируется: на sm_{cap} "
+        "torch.compile даёт OOM/медленные шаги. Обучение без compile.")
+    _COMPILE = ""
+if _COMPILE not in ("", "0"):
+    try:
         log(f"Compiling model (torch.compile {_COMPILE})...")
-        model = torch.compile(model, mode=_COMPILE)
+        model = torch.compile(model, dynamic=True)
         log("  compile done")
-    else:
-        log("torch.compile disabled (FSTNET_COMPILE=0)")
+    except Exception as e:
+        log(f"compile skip: {e}")
 
 # ─── Optimizer ────────────────────────────────────────────────────────
 opt_params = [p for p in model.parameters() if p.requires_grad]
@@ -302,9 +303,10 @@ log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 # ─── Data ─────────────────────────────────────────────────────────────
 # Должно быть ДО OneCycleLR: TOTAL_STEPS нужен для total_steps планировщика.
 ds = ChatDS(DATA_PATH, SEQ_LEN)
+# num_workers=0, pin_memory=False — как 3B тренер: 2 CPU на Colab,
+# воркеры упираются в CPU-блокировку. Загрузка в основном потоке.
 train_loader = DataLoader(ds, batch_size=BATCH, shuffle=True,
-                          num_workers=2, pin_memory=True, drop_last=True,
-                          persistent_workers=True)
+                          num_workers=0, pin_memory=False, drop_last=True)
 
 steps_per_epoch = max(len(train_loader) // ACCUM, 1)
 if TOTAL_STEPS is None:
