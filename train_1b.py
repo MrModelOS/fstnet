@@ -183,9 +183,6 @@ torch.set_default_dtype(COMPUTE_DTYPE)
 model = FSTMoFModel(cfg).to(device)
 torch.set_default_dtype(torch.float32)
 
-log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
-    f"| 1-bit storage: {cfg.bytes_1bit()/1e6:.0f}MB")
-
 # ─── Resume ───────────────────────────────────────────────────────────
 start_step = 0
 best_val = float("inf")
@@ -203,6 +200,15 @@ if os.path.exists(CKPT_LOCAL):
     best_val = ck.get("best_val", float("inf"))
     log(f"  step={start_step}, best_val={best_val:.4f}")
 
+log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
+    f"| 1-bit storage: {cfg.bytes_1bit()/1e6:.0f}MB")
+
+# torch.compile: kernel fusion, -15-20% wall time на T4
+if device == "cuda":
+    log("Compiling model (torch.compile mode=reduce-overhead)...")
+    model = torch.compile(model, mode="reduce-overhead")
+    log("  compile done")
+
 # ─── Optimizer ────────────────────────────────────────────────────────
 opt_params = [p for p in model.parameters() if p.requires_grad]
 opt = Adafactor(opt_params, lr=LR, eps=(1e-30, 1e-3),
@@ -218,7 +224,8 @@ log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 # ─── Data ─────────────────────────────────────────────────────────────
 ds = ChatDS(DATA_PATH, SEQ_LEN)
 train_loader = DataLoader(ds, batch_size=BATCH, shuffle=True,
-                          num_workers=2, pin_memory=True, drop_last=True)
+                          num_workers=2, pin_memory=True, drop_last=True,
+                          persistent_workers=True)
 
 if TOTAL_STEPS is None:
     TOTAL_STEPS = max(len(train_loader) // ACCUM, 100)
