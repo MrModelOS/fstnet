@@ -90,8 +90,6 @@ def get_tokenizer():
         from tokenizers import Tokenizer
         _tokenizer = Tokenizer.from_file(
             os.path.join(_THIS, "brain", "tokenizer", "fst_bpe.json"))
-        _tokenizer.enable_padding(pad_id=0, length=SEQ_LEN)
-        _tokenizer.enable_truncation(max_length=SEQ_LEN)
     return _tokenizer
 
 
@@ -122,51 +120,88 @@ def loss_mask(ids, bounds):
 
 
 # ─── Dataset ──────────────────────────────────────────────────────────
+MMAP_X = os.path.join(_THIS, "data", "x_1b.mmap")
+MMAP_Y = os.path.join(_THIS, "data", "y_1b.mmap")
+MMAP_L = os.path.join(_THIS, "data", "lens_1b.npy")
+
+
 class ChatDS(Dataset):
     def __init__(self, path, seq_len, subsample=None):
         log(f"Loading dataset: {path}")
-        with open(path) as f:
-            data = json.load(f)
+        data = json.load(open(path))
         log(f"  raw conversations: {len(data)}")
 
-        self.x, self.y, self.lens = [], [], []
+        # Pass 1: tokenize, collect lengths, drop short ones
+        rows, bounds_list = [], []
         for conv in data:
             ids, bounds = encode_conv(conv)
             L = len(ids)
             if L < 8:
                 continue
-            lm = loss_mask(ids, bounds)
-            x = np.full(seq_len, PAD_ID, dtype=np.int32)
-            y = np.full(seq_len, IGNORE_ID, dtype=np.int32)
-            if L > seq_len:
-                L = seq_len
-            x[:L] = ids[:L]
-            for j in range(1, L):
-                if lm[j]:
-                    y[j - 1] = ids[j]
-            self.x.append(x)
-            self.y.append(y)
-            self.lens.append(len(ids))
-
+            rows.append(ids)
+            bounds_list.append(bounds)
         del data
         import gc
         gc.collect()
+        N = len(rows)
+        log(f"  valid samples: {N}")
 
-        log(f"  valid samples: {len(self.x)}")
-        if subsample and len(self.x) > subsample:
+        if subsample and N > subsample:
             rng = np.random.default_rng(42)
-            idx = rng.choice(len(self.x), subsample, replace=False)
-            self.x = [self.x[i] for i in idx]
-            self.y = [self.y[i] for i in idx]
-            self.lens = [self.lens[i] for i in idx]
-            log(f"  subsampled to: {len(self.x)}")
+            idx = rng.choice(N, subsample, replace=False)
+            rows = [rows[i] for i in idx]
+            bounds_list = [bounds_list[i] for i in idx]
+            N = len(rows)
+            log(f"  subsampled to: {N}")
+
+        # Pass 2: write to memmap (keep tail of long dialogs → assistant answer)
+        mmx = np.lib.format.open_memmap(MMAP_X, mode="w+",
+                                        dtype=np.int32, shape=(N, seq_len))
+        mmy = np.lib.format.open_memmap(MMAP_Y, mode="w+",
+                                        dtype=np.int32, shape=(N, seq_len))
+        lens_arr = np.empty(N, dtype=np.int64)
+        for i, (ids, bounds) in enumerate(zip(rows, bounds_list)):
+            lm = loss_mask(ids, bounds)
+            L = len(ids)
+            lens_arr[i] = L
+            if L > seq_len:
+                ids = ids[L - seq_len:]
+                lm = lm[L - seq_len:]
+                L = seq_len
+            x = np.full(seq_len, PAD_ID, dtype=np.int32)
+            y = np.full(seq_len, IGNORE_ID, dtype=np.int32)
+            x[:L] = ids
+            # loss only on assistant tokens
+            for j in range(1, L):
+                if lm[j]:
+                    y[j - 1] = ids[j]
+            mmx[i] = x
+            mmy[i] = y
+        mmx.flush()
+        mmy.flush()
+        del rows
+        gc.collect()
+
+        self.mx = mmx
+        self.my = mmy
+        self.lens = lens_arr
+        np.save(MMAP_L, lens_arr)
+        log(f"  memmap written: {MMAP_X}, {MMAP_Y}")
 
     def __len__(self):
-        return len(self.x)
+        return len(self.lens)
 
     def __getitem__(self, i):
-        return (torch.from_numpy(self.x[i].copy()),
-                torch.from_numpy(self.y[i].copy()))
+        L = self.lens[i]
+        if L > SEQ_LEN:
+            s = L - SEQ_LEN
+            xv = self.mx[i, s:L]
+            yv = self.my[i, s:L]
+        else:
+            xv = self.mx[i, :SEQ_LEN]
+            yv = self.my[i, :SEQ_LEN]
+        return (torch.from_numpy(np.ascontiguousarray(xv, dtype=np.int64).copy()),
+                torch.from_numpy(np.ascontiguousarray(yv, dtype=np.int64).copy()))
 
 
 # ─── Checkpoint ───────────────────────────────────────────────────────
