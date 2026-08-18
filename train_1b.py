@@ -2,12 +2,6 @@
 """Обучение FST-Net 1B 1-bit MoF — ускоренный тренер для Colab.
 
 Архитектура: brain/config_1b_mof.py (~970M params, 24 слоя, dim=1280).
-Оптимизации:
-  - Большой батч (16 micro × 4 accum = 64 effective) вместо 1 × 32
-  - Нет gradient checkpointing (1B влезает в VRAM с запасом)
-  - Датасет целиком в RAM (1GB JSON → ~2GB RAM)
-  - Pre-tokenization в RAM (не на диск)
-  - Loss scaling x4096 вместо GradScaler (fp16-параметры)
 
 Запуск в Colab:
   !python train_1b.py
@@ -28,6 +22,10 @@ import json
 import math
 import time
 import contextlib
+
+# Снижает фрагментацию CUDA-аллокатора (частая причина OOM на 14.56GB T4
+# даже при небольшом реальном использовании). Должно быть до первого CUDA.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Обязательно ДО инициализации CUDA: снижает фрагментацию.
 if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
@@ -55,6 +53,14 @@ except ImportError:
 
 def log(msg):
     print(msg, flush=True)
+
+
+def vram(tag):
+    """Пик и текущая VRAM после этапа."""
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / 2**30
+        peak = torch.cuda.max_memory_allocated() / 2**30
+        log(f"[VRAM] {tag}: alloc {alloc:.2f}GB peak {peak:.2f}GB")
 
 
 # ─── Env ──────────────────────────────────────────────────────────────
@@ -247,6 +253,16 @@ torch.set_default_dtype(COMPUTE_DTYPE)
 model = FSTMoFModel(cfg).to(device)
 torch.set_default_dtype(torch.float32)
 
+# Диагностика dtype: fp16 всё должно быть ~1.8GB. Если fp32 (4GB) — почему-то
+# set_default_dtype не сработал и надо разбираться до начала обучения.
+from collections import Counter
+_dtype_sizes = Counter()
+for p in model.parameters():
+    _dtype_sizes[str(p.dtype)] += p.numel() * p.element_size() / 2**30
+_dstr = ", ".join(f"{k}: {v:.2f}GB" for k, v in _dtype_sizes.items())
+log(f"  param memory by dtype: {_dstr}")
+vram("model.to(device)")
+
 # ─── Resume ───────────────────────────────────────────────────────────
 start_step = 0
 best_val = float("inf")
@@ -266,6 +282,7 @@ if os.path.exists(CKPT_LOCAL):
 
 log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
     f"| 1-bit storage: {cfg.bytes_1bit()/1e6:.0f}MB")
+vram("model.to(device)")
 
 # torch.compile на T4 (sm_7): ~час компиляции первого батча + лишние
 # буферы -> OOM и медленные шаги (как в 3B run_trainer.py). По умолчанию
@@ -297,6 +314,7 @@ opt = Adafactor(opt_params, lr=LR, eps=(1e-30, 1e-3),
                 clip_threshold=1.0, decay_rate=-0.8,
                 weight_decay=0.0, relative_step=False,
                 scale_parameter=True, warmup_init=False)
+vram("after Adafactor init")
 
 log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 
@@ -349,6 +367,8 @@ for epoch in range(EPOCHS):
     log(f"\n=== Epoch {epoch+1}/{EPOCHS} ===")
     for it, (bx, by) in enumerate(train_loader):
         bx, by = bx.to(device, non_blocking=True), by.to(device, non_blocking=True)
+        if it == 0:
+            vram("first batch")
         p = step / max(1, TOTAL_STEPS)
         apply_phase(p)
 
