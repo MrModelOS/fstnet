@@ -299,6 +299,7 @@ sch = torch.optim.lr_scheduler.OneCycleLR(
 log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 
 # ─── Data ─────────────────────────────────────────────────────────────
+# Должно быть ДО OneCycleLR: TOTAL_STEPS нужен для total_steps планировщика.
 ds = ChatDS(DATA_PATH, SEQ_LEN)
 train_loader = DataLoader(ds, batch_size=BATCH, shuffle=True,
                           num_workers=2, pin_memory=True, drop_last=True,
