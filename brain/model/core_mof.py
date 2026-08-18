@@ -56,15 +56,14 @@ class ContinuousField(nn.Module):
         # Векторизовано: без цикла и .cpu().tolist() (это давало 3072 host-device sync/forward).
         # h = x @ U[k] по всем полям = FLATTEN(G_EMM): полноценный GEMM (b*t, n*r).
         # out = sum_k alpha*((x@U[k])@V[k]) ТАЧФ.
+        # Без ветвления на binarize: при binarize=0 формула даёт U/V (эквивалентно),
+        # но НЕТ graph break (item()) — torch.compile компилирует одним графом.
         b, t, i = x.shape
         n, r = self.U.shape[0], self.U.shape[2]
-        if self.binarize.item() > 0:
-            sU = self.U.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,r)
-            sV = self.V.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,o)
-            Uq = (1 - self.binarize) * self.U + self.binarize * (ste_sign(self.U) * sU)
-            Vq = (1 - self.binarize) * self.V + self.binarize * (ste_sign(self.V) * sV)
-        else:
-            Uq, Vq = self.U, self.V
+        sU = self.U.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,r)
+        sV = self.V.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,o)
+        Uq = (1 - self.binarize) * self.U + self.binarize * (ste_sign(self.U) * sU)
+        Vq = (1 - self.binarize) * self.V + self.binarize * (ste_sign(self.V) * sV)
         x2 = x.reshape(-1, i)                                        # (b*t, i)
         Uf = Uq.transpose(0, 1).reshape(i, -1)                       # (i, n*r) = U[0]|U[1]|..|U[n-1] колонками
         H = x2 @ Uf                                                  # (b*t, n*r)
