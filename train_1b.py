@@ -14,8 +14,8 @@
 
 Env:
   FSTNET_DATA      — путь к JSON (по умолчанию data/jarvis_full.json)
-  FSTNET_BATCH     — micro-batch (16)
-  FSTNET_ACCUM     — accumulation steps (4, effective=64)
+  FSTNET_BATCH     — micro-batch (2, как 3B тренер)
+  FSTNET_ACCUM     — accumulation steps (32, effective=64)
   FSTNET_LR        — learning rate (3e-4)
   FSTNET_EPOCHS    — epochs (2)
   FSTNET_SEQ       — max seq len (2048)
@@ -59,8 +59,8 @@ def log(msg):
 
 # ─── Env ──────────────────────────────────────────────────────────────
 DATA_PATH   = os.environ.get("FSTNET_DATA", "data/jarvis_full.json")
-BATCH       = int(os.environ.get("FSTNET_BATCH", "16"))
-ACCUM       = int(os.environ.get("FSTNET_ACCUM", "4"))
+BATCH       = int(os.environ.get("FSTNET_BATCH", "2"))    # как 3B: micro 2, активации малы
+ACCUM       = int(os.environ.get("FSTNET_ACCUM", "32"))   # эффективный батч 64
 LR          = float(os.environ.get("FSTNET_LR", "3e-4"))
 EPOCHS      = int(os.environ.get("FSTNET_EPOCHS", "2"))
 SEQ_LEN     = int(os.environ.get("FSTNET_SEQ", "2048"))
@@ -269,8 +269,13 @@ log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
 
 # torch.compile: kernel fusion. НЕ reduce-overhead — CUDA graphs держат
 # все 1900+ промежуточных буферов в VRAM (OOM на T4 16GB). Обычный mode.
+# grad checkpointing: ВЫКЛ по умолчанию — он ломает compile (graph break на
+# каждом блоке -> пересборка) и +30% времени. Для 1B VRAM хватает и без него.
+os.environ.setdefault("FSTNET_GRAD_CKPT", "0")
 from memory_manager import enable_if_env
-mm = enable_if_env(device=device)          # grad ckpt по умолчанию ВКЛ
+mm = enable_if_env(device=device)
+if mm.enabled:
+    log("Gradient checkpointing ON (FSTNET_GRAD_CKPT)")
 mm.wrap_model(model)
 if device == "cuda":
     _COMPILE = os.environ.get("FSTNET_COMPILE", "1").strip()

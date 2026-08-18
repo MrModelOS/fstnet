@@ -34,8 +34,6 @@ class BitLinear(nn.Module):
             x = quant_act8(x)
         w = self.weight
         s = self.weight.abs().mean(dim=1, keepdim=True).clamp_min(1e-12) if self.training else self.scale
-        if self.training:
-            self.scale.data.copy_(s.data.detach())
         wq = (1 - self.binarize) * w + self.binarize * (ste_sign(w) * s)
         return F.linear(x, wq, self.bias)
 
