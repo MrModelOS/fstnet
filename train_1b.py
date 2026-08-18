@@ -191,16 +191,11 @@ class ChatDS(Dataset):
         return len(self.lens)
 
     def __getitem__(self, i):
-        L = self.lens[i]
-        if L > SEQ_LEN:
-            s = L - SEQ_LEN
-            xv = self.mx[i, s:L]
-            yv = self.my[i, s:L]
-        else:
-            xv = self.mx[i, :SEQ_LEN]
-            yv = self.my[i, :SEQ_LEN]
-        return (torch.from_numpy(np.ascontiguousarray(xv, dtype=np.int64).copy()),
-                torch.from_numpy(np.ascontiguousarray(yv, dtype=np.int64).copy()))
+        # Хвост длинных диалогов уже записан в начало строки при построении.
+        # torch.tensor(): свежая резервируемая память (from_numpy на memmap
+        # даёт не-resizable storage -> collate падает с resize_).
+        return (torch.tensor(self.mx[i], dtype=torch.long),
+                torch.tensor(self.my[i], dtype=torch.long))
 
 
 # ─── Checkpoint ───────────────────────────────────────────────────────
