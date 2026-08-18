@@ -136,8 +136,8 @@ class ChatDS(Dataset):
             if L < 8:
                 continue
             lm = loss_mask(ids, bounds)
-            x = np.full(seq_len, PAD_ID, dtype=np.int16)
-            y = np.full(seq_len, IGNORE_ID, dtype=np.int16)
+            x = np.full(seq_len, PAD_ID, dtype=np.int32)
+            y = np.full(seq_len, IGNORE_ID, dtype=np.int32)
             if L > seq_len:
                 L = seq_len
             x[:L] = ids[:L]
