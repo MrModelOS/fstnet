@@ -129,41 +129,26 @@ class ChatDS(Dataset):
     def __init__(self, path, seq_len, subsample=None):
         log(f"Loading dataset: {path}")
         data = json.load(open(path))
-        log(f"  raw conversations: {len(data)}")
+        N_raw = len(data)
+        log(f"  raw conversations: {N_raw}")
 
-        # Pass 1: tokenize, collect lengths, drop short ones
-        rows, bounds_list = [], []
-        for conv in data:
+        # Single pass: stream straight into memmap, nothing kept in RAM.
+        # (rows in Python lists = 10+ GB → OOM; only one row at a time here.)
+        mmx = np.lib.format.open_memmap(MMAP_X, mode="w+",
+                                        dtype=np.int32, shape=(N_raw, seq_len))
+        mmy = np.lib.format.open_memmap(MMAP_Y, mode="w+",
+                                        dtype=np.int32, shape=(N_raw, seq_len))
+        lens_arr = np.empty(N_raw, dtype=np.int64)
+
+        n = 0
+        import gc
+        for i, conv in enumerate(data):
             ids, bounds = encode_conv(conv)
             L = len(ids)
             if L < 8:
                 continue
-            rows.append(ids)
-            bounds_list.append(bounds)
-        del data
-        import gc
-        gc.collect()
-        N = len(rows)
-        log(f"  valid samples: {N}")
-
-        if subsample and N > subsample:
-            rng = np.random.default_rng(42)
-            idx = rng.choice(N, subsample, replace=False)
-            rows = [rows[i] for i in idx]
-            bounds_list = [bounds_list[i] for i in idx]
-            N = len(rows)
-            log(f"  subsampled to: {N}")
-
-        # Pass 2: write to memmap (keep tail of long dialogs → assistant answer)
-        mmx = np.lib.format.open_memmap(MMAP_X, mode="w+",
-                                        dtype=np.int32, shape=(N, seq_len))
-        mmy = np.lib.format.open_memmap(MMAP_Y, mode="w+",
-                                        dtype=np.int32, shape=(N, seq_len))
-        lens_arr = np.empty(N, dtype=np.int64)
-        for i, (ids, bounds) in enumerate(zip(rows, bounds_list)):
             lm = loss_mask(ids, bounds)
-            L = len(ids)
-            lens_arr[i] = L
+            lens_arr[n] = L
             if L > seq_len:
                 ids = ids[L - seq_len:]
                 lm = lm[L - seq_len:]
@@ -175,17 +160,31 @@ class ChatDS(Dataset):
             for j in range(1, L):
                 if lm[j]:
                     y[j - 1] = ids[j]
-            mmx[i] = x
-            mmy[i] = y
+            mmx[n] = x
+            mmy[n] = y
+            n += 1
+            if i % 50000 == 0:
+                gc.collect()
+        del data
+        gc.collect()
+
         mmx.flush()
         mmy.flush()
-        del rows
-        gc.collect()
+        log(f"  valid samples: {n}")
+
+        if subsample and n > subsample:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(n, subsample, replace=False)
+            mmx = mmx[idx]
+            mmy = mmy[idx]
+            lens_arr = lens_arr[idx]
+            n = len(idx)
+            log(f"  subsampled to: {n}")
 
         self.mx = mmx
         self.my = mmy
-        self.lens = lens_arr
-        np.save(MMAP_L, lens_arr)
+        self.lens = lens_arr[:n]
+        np.save(MMAP_L, self.lens)
         log(f"  memmap written: {MMAP_X}, {MMAP_Y}")
 
     def __len__(self):
