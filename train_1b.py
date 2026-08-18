@@ -369,11 +369,20 @@ for epoch in range(EPOCHS):
             if step % 1000 == 0:
                 save_step_ckpt("periodic")
 
-            if step % 50 == 0:
-                now = time.time()
-                eta = (now - t0) / max(step - step0, 1) * (TOTAL_STEPS - step)
-                log(f"  step {step}/{TOTAL_STEPS} | CE {ce.item():.4f} | "
-                    f"lr {sch.get_last_lr()[0]:.2e} | ETA {eta/60:.0f}min")
+            # Лог на каждый шаг
+            now = time.time()
+            sps = (step - step0) / max(now - t0, 1e-6)
+            eta = (now - t0) / max(step - step0, 1) * (TOTAL_STEPS - step)
+            log(f"  step {step}/{TOTAL_STEPS} | CE {ce.item():.4f} | "
+                f"lr {sch.get_last_lr()[0]:.2e} | {sps:.2f} step/s | ETA {eta/60:.0f}min")
+
+            # Расширенный лог каждые 30 сек
+            if now - last_pulse >= 30:
+                last_pulse = now
+                vr = torch.cuda.memory_allocated() / 1024**3 if device == "cuda" else 0
+                p = step / max(1, TOTAL_STEPS)
+                log(f"    [30s] CE {ce.item():.4f} | lr {sch.get_last_lr()[0]:.2e} | "
+                    f"bin {p:.0%} | VRAM {vr:.1f}GB | {sps:.2f} step/s | ETA {eta/60:.0f}min")
 
             if step >= TOTAL_STEPS:
                 break

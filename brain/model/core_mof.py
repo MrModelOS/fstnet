@@ -20,12 +20,14 @@ class BitLinear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.binarize = binarize
         self.quant_in = quant_in
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         nn.init.uniform_(self.weight, -1.0 / in_features ** 0.5, 1.0 / in_features ** 0.5)
         self.scale = nn.Parameter(torch.ones(out_features, 1))
         self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
+        # binarize как тензор (не Python float): torch.compile не рекомпилирует
+        # граф при каждом изменении ratio (warmup -> full 1-bit).
+        self.register_buffer("binarize", torch.tensor(float(binarize)))
 
     def forward(self, x):
         if self.quant_in:
@@ -43,7 +45,7 @@ class ContinuousField(nn.Module):
         super().__init__()
         self.U = nn.Parameter(torch.empty(n_fields, in_features, field_rank))
         self.V = nn.Parameter(torch.empty(n_fields, field_rank, out_features))
-        self.binarize = binarize
+        self.register_buffer("binarize", torch.tensor(float(binarize)))
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -56,7 +58,7 @@ class ContinuousField(nn.Module):
         # out = sum_k alpha*((x@U[k])@V[k]) ТАЧФ.
         b, t, i = x.shape
         n, r = self.U.shape[0], self.U.shape[2]
-        if self.binarize > 0:
+        if self.binarize.item() > 0:
             sU = self.U.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,r)
             sV = self.V.abs().mean(dim=1, keepdim=True).clamp_min(1e-12)   # (n,1,o)
             Uq = (1 - self.binarize) * self.U + self.binarize * (ste_sign(self.U) * sU)
@@ -240,10 +242,8 @@ class FSTMoFModel(nn.Module):
 
     def set_binarize(self, ratio):
         for m in self.modules():
-            if isinstance(m, BitLinear):
-                m.binarize = ratio
-            elif isinstance(m, ContinuousField):
-                m.binarize = ratio
+            if isinstance(m, (BitLinear, ContinuousField)):
+                m.binarize.fill_(float(ratio))
 
     @torch.no_grad()
     def generate(self, idx, max_new=128, temperature=0.8, top_k=50, top_p=0.9):
