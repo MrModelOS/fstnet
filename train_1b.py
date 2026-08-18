@@ -291,10 +291,6 @@ opt = Adafactor(opt_params, lr=LR, eps=(1e-30, 1e-3),
                 clip_threshold=1.0, decay_rate=-0.8,
                 weight_decay=0.0, relative_step=False,
                 scale_parameter=True, warmup_init=False)
-sch = torch.optim.lr_scheduler.OneCycleLR(
-    opt, max_lr=LR, pct_start=0.05, div_factor=25,
-    final_div_factor=100, total_steps=TOTAL_STEPS or 1,
-    cycle_momentum=False)  # Adafactor не имеет momentum/betas
 
 log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 
@@ -311,6 +307,12 @@ if TOTAL_STEPS is None:
 log(f"  dataset samples: {len(ds)} | steps/epoch: {steps_per_epoch}")
 log(f"  epochs: {EPOCHS} | total steps: {TOTAL_STEPS} "
     f"| ckpt: every 1000 steps + end of epoch")
+
+# OneCycleLR: total_steps уже вычислен
+sch = torch.optim.lr_scheduler.OneCycleLR(
+    opt, max_lr=LR, pct_start=0.05, div_factor=25,
+    final_div_factor=100, total_steps=TOTAL_STEPS,
+    cycle_momentum=False)  # Adafactor не имеет momentum/betas
 
 # ─── Binarize schedule ───────────────────────────────────────────────
 def apply_phase(p):
