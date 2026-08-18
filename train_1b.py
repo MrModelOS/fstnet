@@ -217,7 +217,8 @@ opt = Adafactor(opt_params, lr=LR, eps=(1e-30, 1e-3),
                 scale_parameter=True, warmup_init=False)
 sch = torch.optim.lr_scheduler.OneCycleLR(
     opt, max_lr=LR, pct_start=0.05, div_factor=25,
-    final_div_factor=100, total_steps=TOTAL_STEPS or 1)
+    final_div_factor=100, total_steps=TOTAL_STEPS or 1,
+    cycle_momentum=False)  # Adafactor не имеет momentum/betas
 
 log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 
