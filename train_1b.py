@@ -272,11 +272,23 @@ if os.path.exists(CKPT_LOCAL):
 log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
     f"| 1-bit storage: {cfg.bytes_1bit()/1e6:.0f}MB")
 
-# torch.compile: kernel fusion, -15-20% wall time на T4
+# torch.compile: kernel fusion. НЕ reduce-overhead — CUDA graphs держат
+# все 1900+ промежуточных буферов в VRAM (OOM на T4 16GB). Обычный mode.
+from memory_manager import enable_if_env
+mm = enable_if_env(device=device)          # grad ckpt по умолчанию ВКЛ
+mm.wrap_model(model)
 if device == "cuda":
-    log("Compiling model (torch.compile mode=reduce-overhead)...")
-    model = torch.compile(model, mode="reduce-overhead")
-    log("  compile done")
+    _COMPILE = os.environ.get("FSTNET_COMPILE", "1").strip()
+    if _COMPILE in ("1", "true", "yes", "default"):
+        log("Compiling model (torch.compile default)...")
+        model = torch.compile(model, mode="default")
+        log("  compile done")
+    elif _COMPILE not in ("0", "false", "no"):
+        log(f"Compiling model (torch.compile {_COMPILE})...")
+        model = torch.compile(model, mode=_COMPILE)
+        log("  compile done")
+    else:
+        log("torch.compile disabled (FSTNET_COMPILE=0)")
 
 # ─── Optimizer ────────────────────────────────────────────────────────
 opt_params = [p for p in model.parameters() if p.requires_grad]
@@ -325,6 +337,7 @@ step0 = step
 t0 = time.time()
 last_pulse = t0
 
+mm.reset()
 opt.zero_grad(set_to_none=True)
 
 for epoch in range(EPOCHS):
@@ -342,6 +355,7 @@ for epoch in range(EPOCHS):
 
         loss = loss.float() / ACCUM
         loss = loss * LOSS_SCALE
+        mm.before_backward()
         loss.backward()
 
         if (it + 1) % ACCUM == 0:
@@ -352,6 +366,7 @@ for epoch in range(EPOCHS):
             opt.zero_grad(set_to_none=True)
             sch.step()
             step += 1
+            mm.after_step()
 
             if step % 1000 == 0:
                 save_step_ckpt("periodic")
@@ -407,3 +422,4 @@ if CKPT_DRIVE:
     log(f"Uploaded to Drive: {CKPT_DRIVE}")
 
 log(f"\nDONE. Steps={step}, best_val={best_val:.4f}")
+log(mm.report())
