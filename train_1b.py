@@ -74,6 +74,7 @@ LOSS_SCALE  = 4096.0  # fp16 loss scaling (exact ÷2^k)
 CONTENT     = "/content" if os.path.isdir("/content") else os.path.expanduser("~")
 CKPT_LOCAL  = os.path.join(CONTENT, "best_1b_mof.pt")
 CKPT_FINAL  = os.path.join(CONTENT, "final_1b_mof.pt")
+CKPT_STEP   = os.path.join(CONTENT, "ckpt_step")  # каждые 1000 шагов
 
 # Google Drive
 DRIVE_PATH  = "/content/drive/MyDrive" if os.path.isdir("/content/drive/MyDrive") else ""
@@ -177,6 +178,26 @@ def load_ckpt(path):
     return load_checkpoint(path)
 
 
+def save_step_ckpt(tag):
+    """Чекпоинт каждые 1000 шагов: /content/ckpt_step/step_XXXX.pt + на Drive."""
+    os.makedirs(CKPT_STEP, exist_ok=True)
+    st = {
+        "step": step,
+        "model_state": model.state_dict(),
+        "config": cfg,
+        "best_val": best_val,
+    }
+    p = os.path.join(CKPT_STEP, f"step_{step:06d}_{tag}.pt")
+    save_ckpt(p, st)
+    log(f"  [CKPT] saved {p}")
+    if CKPT_DRIVE:
+        import shutil
+        try:
+            shutil.copy2(p, os.path.join(os.path.dirname(CKPT_DRIVE), os.path.basename(p)))
+        except Exception as e:
+            log(f"  [WARN] drive copy failed: {e}")
+
+
 # ─── Model ────────────────────────────────────────────────────────────
 cfg = FSTMoFConfig(max_seq_len=SEQ_LEN)
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -238,9 +259,12 @@ train_loader = DataLoader(ds, batch_size=BATCH, shuffle=True,
                           num_workers=2, pin_memory=True, drop_last=True,
                           persistent_workers=True)
 
+steps_per_epoch = max(len(train_loader) // ACCUM, 1)
 if TOTAL_STEPS is None:
-    TOTAL_STEPS = max(len(train_loader) // ACCUM, 100)
-    log(f"  auto TOTAL_STEPS={TOTAL_STEPS} (from dataset)")
+    TOTAL_STEPS = steps_per_epoch * EPOCHS
+log(f"  dataset samples: {len(ds)} | steps/epoch: {steps_per_epoch}")
+log(f"  epochs: {EPOCHS} | total steps: {TOTAL_STEPS} "
+    f"| ckpt: every 1000 steps + end of epoch")
 
 # ─── Binarize schedule ───────────────────────────────────────────────
 def apply_phase(p, freeze_w0=False):
@@ -291,6 +315,9 @@ for epoch in range(EPOCHS):
             sch.step()
             step += 1
 
+            if step % 1000 == 0:
+                save_step_ckpt("periodic")
+
             if step % 50 == 0:
                 now = time.time()
                 eta = (now - t0) / max(step - step0, 1) * (TOTAL_STEPS - step)
@@ -300,6 +327,7 @@ for epoch in range(EPOCHS):
             if step >= TOTAL_STEPS:
                 break
 
+    save_step_ckpt("epoch_end")
     if step >= TOTAL_STEPS:
         break
 
