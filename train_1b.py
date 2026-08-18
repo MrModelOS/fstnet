@@ -136,8 +136,8 @@ class ChatDS(Dataset):
             if L < 8:
                 continue
             lm = loss_mask(ids, bounds)
-            x = np.full(seq_len, PAD_ID, dtype=np.int32)
-            y = np.full(seq_len, IGNORE_ID, dtype=np.int32)
+            x = np.full(seq_len, PAD_ID, dtype=np.int16)
+            y = np.full(seq_len, IGNORE_ID, dtype=np.int16)
             if L > seq_len:
                 L = seq_len
             x[:L] = ids[:L]
@@ -147,6 +147,10 @@ class ChatDS(Dataset):
             self.x.append(x)
             self.y.append(y)
             self.lens.append(len(ids))
+
+        del data
+        import gc
+        gc.collect()
 
         log(f"  valid samples: {len(self.x)}")
         if subsample and len(self.x) > subsample:
@@ -267,14 +271,14 @@ log(f"  epochs: {EPOCHS} | total steps: {TOTAL_STEPS} "
     f"| ckpt: every 1000 steps + end of epoch")
 
 # ─── Binarize schedule ───────────────────────────────────────────────
-def apply_phase(p, freeze_w0=False):
+def apply_phase(p):
     if p < 0.15:
         ratio = 0.0
     elif p < 0.6:
         ratio = (p - 0.15) / 0.45
     else:
         ratio = 1.0
-    model.set_binarize(ratio, freeze_w0=freeze_w0)
+    model.set_binarize(ratio)
 
 
 # ─── Training ─────────────────────────────────────────────────────────
@@ -294,7 +298,7 @@ for epoch in range(EPOCHS):
     for it, (bx, by) in enumerate(train_loader):
         bx, by = bx.to(device, non_blocking=True), by.to(device, non_blocking=True)
         p = step / max(1, TOTAL_STEPS)
-        apply_phase(p, freeze_w0=(p > 0.6))
+        apply_phase(p)
 
         with autocast(**_AMP_DTYPE_KW) if device == "cuda" else contextlib.nullcontext():
             logits, ce = model(bx, by)
