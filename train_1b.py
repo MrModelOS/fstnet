@@ -96,22 +96,28 @@ def get_tokenizer():
 
 PAD_ID   = 0
 IGNORE_ID = -100
+IM_S = "<|im_start|>"
+IM_E = "<|im_end|>"
 
 
 def encode_conv(conv):
-    """Кодирует диалог в токены с маской loss (только на ответах ассистента)."""
+    """Кодирует диалог (role, content кортежи) с маской loss на ответах."""
     tok = get_tokenizer()
-    ids, mask, in_assistant = [], [], False
-    for turn in conv:
-        role = turn.get("role", "").lower()
-        text = turn.get("content", turn.get("text", ""))
-        if not text.strip():
-            continue
-        in_assistant = role in ("assistant", "bot", "model")
-        enc = tok.encode(text)
-        ids.extend(enc.ids)
-        mask.extend([in_assistant] * len(enc.ids))
-    return ids, mask
+    ids, bounds = [], []
+    for role, content in conv:
+        seg = tok.encode(IM_S + role + "\n" + content + IM_E).ids
+        bounds.append((len(ids), len(ids) + len(seg), role))
+        ids += seg
+    return ids, bounds
+
+
+def loss_mask(ids, bounds):
+    mask = [0] * len(ids)
+    for s, e, role in bounds:
+        if role == "assistant":
+            for j in range(s, e):
+                mask[j] = 1
+    return mask
 
 
 # ─── Dataset ──────────────────────────────────────────────────────────
@@ -122,21 +128,24 @@ class ChatDS(Dataset):
             data = json.load(f)
         log(f"  raw conversations: {len(data)}")
 
-        self.x, self.y = [], []
-        for i, conv in enumerate(data):
-            ids, mask = encode_conv(conv)
+        self.x, self.y, self.lens = [], [], []
+        for conv in data:
+            ids, bounds = encode_conv(conv)
             L = len(ids)
-            if L < 8 or L > seq_len:
+            if L < 8:
                 continue
+            lm = loss_mask(ids, bounds)
             x = np.full(seq_len, PAD_ID, dtype=np.int32)
             y = np.full(seq_len, IGNORE_ID, dtype=np.int32)
-            x[:L] = ids
-            # loss на токенах ассистента, сдвинутых на 1
+            if L > seq_len:
+                L = seq_len
+            x[:L] = ids[:L]
             for j in range(1, L):
-                if mask[j]:
+                if lm[j]:
                     y[j - 1] = ids[j]
             self.x.append(x)
             self.y.append(y)
+            self.lens.append(len(ids))
 
         log(f"  valid samples: {len(self.x)}")
         if subsample and len(self.x) > subsample:
@@ -144,6 +153,7 @@ class ChatDS(Dataset):
             idx = rng.choice(len(self.x), subsample, replace=False)
             self.x = [self.x[i] for i in idx]
             self.y = [self.y[i] for i in idx]
+            self.lens = [self.lens[i] for i in idx]
             log(f"  subsampled to: {len(self.x)}")
 
     def __len__(self):
