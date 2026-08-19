@@ -287,8 +287,10 @@ vram("model.to(device)")
 # torch.compile на T4 (sm_7): ~час компиляции первого батча + лишние
 # буферы -> OOM и медленные шаги (как в 3B run_trainer.py). По умолчанию
 # ВЫКЛ; включить только вручную через FSTNET_COMPILE.
-# grad checkpointing: ВЫКЛ (для 1B VRAM хватает).
-os.environ.setdefault("FSTNET_GRAD_CKPT", "0")
+# grad checkpointing: ВКЛЮЧЁН по умолчанию (как в 3B). Без него все 24 слоя
+# держат активации в VRAM (~500MB/слой = 12GB) -> OOM на T4. Пересчёт на
+# backward стоит ~30% времени, но активации только 1 слоя в памяти.
+os.environ.setdefault("FSTNET_GRAD_CKPT", "1")
 from memory_manager import enable_if_env
 mm = enable_if_env(device=device)
 if mm.enabled:
