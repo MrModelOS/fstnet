@@ -21,6 +21,7 @@ import sys
 import json
 import math
 import time
+import shutil
 import contextlib
 
 # Снижает фрагментацию CUDA-аллокатора (частая причина OOM на 14.56GB T4
@@ -129,11 +130,50 @@ def loss_mask(ids, bounds):
 MMAP_X = os.path.join(_THIS, "data", "x_1b.mmap")
 MMAP_Y = os.path.join(_THIS, "data", "y_1b.mmap")
 MMAP_L = os.path.join(_THIS, "data", "lens_1b.npy")
+# Кэш пре-токенизации на Диске (переживает Factory reset Colab):
+# x/y memmap + lens, как npz-бэкап в 3B тренере.
+DRIVE_CACHE_DIR = os.environ.get(
+    "FSTNET_DRIVE_CACHE", "/content/drive/MyDrive/fstnet_1b/cache")
 
 
 class ChatDS(Dataset):
     def __init__(self, path, seq_len, subsample=None):
         log(f"Loading dataset: {path}")
+
+        # ── Кэш пре-токенизации ──
+        # 3B тренер кэширует memmap (+npz на Диске) и не пере-токенизирует
+        # 500K диалогов при каждом запуске (~10-15 мин). Для 1B: если
+        # x/y/lens уже есть и совпадает seq_len — загружаем как есть.
+        def _load_cache():
+            if (os.path.exists(MMAP_X) and os.path.exists(MMAP_Y)
+                    and os.path.exists(MMAP_L)):
+                _existing = np.load(MMAP_X, mmap_mode="r")
+                if _existing.shape[1] == seq_len and _existing.shape[0] > 0:
+                    self.mx = _existing
+                    self.my = np.load(MMAP_Y, mmap_mode="r")
+                    self.lens = np.load(MMAP_L)
+                    log(f"  dataset samples: {len(self.lens)} (кэш, seq={seq_len})")
+                    return True
+            return False
+
+        if _load_cache():
+            return
+
+        # Кэш с Диска -> локально (переживает Factory reset Colab).
+        if os.path.isdir(DRIVE_CACHE_DIR):
+            for _name in (os.path.basename(MMAP_X), os.path.basename(MMAP_Y),
+                          os.path.basename(MMAP_L)):
+                _src = os.path.join(DRIVE_CACHE_DIR, _name)
+                if os.path.exists(_src):
+                    try:
+                        shutil.copyfile(_src, os.path.join(
+                            os.path.dirname(MMAP_X), _name))
+                    except Exception as e:
+                        log(f"  [WARN] копия кэша с Диска: {e}")
+            if _load_cache():
+                log(f"  кэш взят с Диска ({DRIVE_CACHE_DIR})")
+                return
+
         data = json.load(open(path))
         N_raw = len(data)
         log(f"  raw conversations: {N_raw}")
@@ -192,6 +232,22 @@ class ChatDS(Dataset):
         self.lens = lens_arr[:n]
         np.save(MMAP_L, self.lens)
         log(f"  memmap written: {MMAP_X}, {MMAP_Y}")
+
+        # Бэкап пре-токенизации на Диск — при Factory reset Colab /content
+        # очищается, и без кэша следующий запуск снова потратит ~15 мин.
+        if os.path.isdir("/content/drive"):
+            try:
+                os.makedirs(DRIVE_CACHE_DIR, exist_ok=True)
+                mmx.flush()
+                mmy.flush()
+                for _name in (os.path.basename(MMAP_X), os.path.basename(MMAP_Y),
+                              os.path.basename(MMAP_L)):
+                    shutil.copyfile(
+                        os.path.join(os.path.dirname(MMAP_X), _name),
+                        os.path.join(DRIVE_CACHE_DIR, _name))
+                log(f"  пре-токенизация сохранена на Диск: {DRIVE_CACHE_DIR}")
+            except Exception as e:
+                log(f"  [WARN] бэкап кэша на Диск: {e}")
 
     def __len__(self):
         return len(self.lens)
