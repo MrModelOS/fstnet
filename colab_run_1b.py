@@ -175,6 +175,17 @@ def sync_file(local, drive):
         log(f"[WARN] sync {local} -> {drive}: {e}")
 
 
+def _looks_valid_json(path):
+    """Грубая проверка целостности: файл заканчивается на ']' (JSON-массив)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(-8, os.SEEK_END)
+            tail = f.read()
+        return tail.rstrip()[-1:] == b"]"
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def ensure_data():
     """Возвращает локальный путь к jarvis_full.json."""
     name = "jarvis_full.json"
@@ -182,14 +193,19 @@ def ensure_data():
     drive = os.path.join(DRIVE_DATA, name)
 
     if os.path.exists(local) and os.path.getsize(local) > 1_000_000:
-        log(f"Датасет уже есть: {local} ({os.path.getsize(local)/1e6:.0f}MB)")
-        return local
+        if _looks_valid_json(local):
+            log(f"Датасет уже есть: {local} ({os.path.getsize(local)/1e6:.0f}MB)")
+            return local
+        log(f"[WARN] {local} повреждён ({os.path.getsize(local)/1e6:.0f}MB) — "
+            "пересоздаю из источника")
 
     if os.path.exists(drive):
-        log(f"Копирую с Диска: {drive} -> {local}")
-        os.makedirs(DATA, exist_ok=True)
-        shutil.copyfile(drive, local)
-        return local
+        if _looks_valid_json(drive):
+            log(f"Копирую с Диска: {drive} -> {local}")
+            os.makedirs(DATA, exist_ok=True)
+            shutil.copyfile(drive, local)
+            return local
+        log(f"[WARN] {drive} тоже повреждён — перехожу к git-архиву")
 
     # git-архив
     archive = os.path.join(DATA, name + ".gz")
@@ -205,8 +221,10 @@ def ensure_data():
         os.makedirs(DATA, exist_ok=True)
         with gzip.open(archive, "rb") as gz, open(local, "wb") as f:
             shutil.copyfileobj(gz, f)
-        log(f"  распакован ({os.path.getsize(local)/1e6:.0f}MB)")
-        return local
+        if _looks_valid_json(local):
+            log(f"  распакован ({os.path.getsize(local)/1e6:.0f}MB)")
+            return local
+        log(f"[WARN] распакованный файл повреждён ({os.path.getsize(local)/1e6:.0f}MB)")
 
     raise SystemExit(
         f"[FAIL] Датасет {name} не найден. Скопируй на Диск: "
