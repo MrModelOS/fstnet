@@ -30,6 +30,50 @@ import gzip
 import shutil
 import subprocess
 
+# Защита от двойного запуска: VS Code Colab extension иногда выполняет
+# ячейку дважды — два процесса train_1b.py на одной T4 дают 2xVRAM -> OOM.
+# Lock-файл: второй запуск ждёт завершения первого (максимум 10 минут).
+_LOCK = "/tmp/fstnet_train.lock"
+def _acquire_lock():
+    import stat
+    if os.path.exists(_LOCK):
+        st = os.stat(_LOCK)
+        age = time.time() - st.st_mtime
+        pid = None
+        try:
+            pid = int(open(_LOCK).read().strip())
+        except Exception:
+            pid = None
+        alive = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except (ProcessLookupError, PermissionError):
+                alive = False
+        if alive and age < 3600:
+            print(f"[LOCK] Другой запуск уже идёт (pid={pid}, {age:.0f}с назад). Жду...")
+            for _ in range(600):
+                time.sleep(10)
+                if not os.path.exists(_LOCK):
+                    break
+            print("[LOCK] Стартую (первый процесс завершился).")
+        else:
+            print(f"[LOCK] Убираю устаревший lock (pid={pid}, age={age:.0f}с)")
+            try:
+                os.remove(_LOCK)
+            except OSError:
+                pass
+    with open(_LOCK, "w") as f:
+        f.write(str(os.getpid()))
+    print(f"[LOCK] pid={os.getpid()}")
+
+def _release_lock():
+    try:
+        os.remove(_LOCK)
+    except OSError:
+        pass
+
 REPO = "https://github.com/MrModelOS/fstnet.git"
 SKILL = "/content/fstnet"
 DATA = os.path.join(SKILL, "data")
@@ -184,7 +228,14 @@ def train_env():
 
 def main():
     ts = time.strftime("%Y%m%d_%H%M%S")
+    _acquire_lock()
+    try:
+        _main(ts)
+    finally:
+        _release_lock()
 
+
+def _main(ts):
     log("=" * 60)
     log("FST-NET 1B TRAINING | 1-bit MoF (993M params)")
     log("=" * 60)
