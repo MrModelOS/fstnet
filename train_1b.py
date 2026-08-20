@@ -397,10 +397,13 @@ vram("model.to(device)")
 # torch.compile на T4 (sm_7): ~час компиляции первого батча + лишние
 # буферы -> OOM и медленные шаги (как в 3B run_trainer.py). По умолчанию
 # ВЫКЛ; включить только вручную через FSTNET_COMPILE.
-# grad checkpointing: нужен при seq=2048 (активации ~12GB). При seq<=1024
-# активации ~0.8-1GB — пересчёт на backward (+30% времени) не нужен,
-# поэтому ckpt ВЫКЛЮЧЕН по умолчанию (FSTNET_GRAD_CKPT=1 вернёт).
-os.environ.setdefault("FSTNET_GRAD_CKPT", "0" if SEQ_LEN <= 1024 else "1")
+# grad checkpointing: ВКЛЮЧЁН — без него активации 24 слоёв при batch=4
+# seq=512 держат ~10.5GB VRAM (FFN 6GB + attention 1.5GB + веса/грады 3.7GB)
+# из 12.7 — нет запаса на всплески. ckpt хранит активации 1 слоя (~0.3GB),
+# VRAM падает до ~4.5GB. Цена +30% времени на пересчёт forward — но batch=4
+# (микрошагов вдвое меньше чем batch=2) это перекрывает. Отключить для
+# скорости (если нужно больше): FSTNET_GRAD_CKPT=0.
+os.environ.setdefault("FSTNET_GRAD_CKPT", "1")
 from memory_manager import enable_if_env
 mm = enable_if_env(device=device)
 if mm.enabled:
