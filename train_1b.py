@@ -68,8 +68,9 @@ def vram(tag):
 
 # ─── Env ──────────────────────────────────────────────────────────────
 DATA_PATH   = os.environ.get("FSTNET_DATA", "data/jarvis_full.json")
-BATCH       = int(os.environ.get("FSTNET_BATCH", "2"))    # как 3B: micro 2, активации малы
-ACCUM       = int(os.environ.get("FSTNET_ACCUM", "32"))   # эффективный батч 64
+BATCH       = int(os.environ.get("FSTNET_BATCH", "4"))     # micro 4, seq 512: активации ~8GB, влезает в T4
+ACCUM       = int(os.environ.get("FSTNET_ACCUM", "16"))   # эффективный батч 64 (4*16)
+SAMPLE_N    = int(os.environ.get("FSTNET_SAMPLES", "100000"))  # как 3B: субсэмпл, иначе 500K = 150 часов
 LR          = float(os.environ.get("FSTNET_LR", "3e-4"))
 EPOCHS      = int(os.environ.get("FSTNET_EPOCHS", "2"))
 SEQ_LEN     = int(os.environ.get("FSTNET_SEQ", "512"))   # avg диалога ~360: 512 хватает, attention в 4x меньше чем 2048
@@ -154,6 +155,13 @@ class ChatDS(Dataset):
                     self.mx = _existing
                     self.my = np.load(MMAP_Y, mmap_mode="r")
                     self.lens = np.load(MMAP_L)
+                    if subsample and len(self.lens) > subsample:
+                        rng = np.random.default_rng(42)
+                        idx = rng.choice(len(self.lens), subsample, replace=False)
+                        self.mx = self.mx[idx]
+                        self.my = self.my[idx]
+                        self.lens = self.lens[idx]
+                        log(f"  subsampled to: {len(self.lens)}")
                     self._log_lens_stats(seq_len)
                     log(f"  dataset samples: {len(self.lens)} (кэш, seq={seq_len})")
                     return True
@@ -389,10 +397,10 @@ vram("model.to(device)")
 # torch.compile на T4 (sm_7): ~час компиляции первого батча + лишние
 # буферы -> OOM и медленные шаги (как в 3B run_trainer.py). По умолчанию
 # ВЫКЛ; включить только вручную через FSTNET_COMPILE.
-# grad checkpointing: ВКЛЮЧЁН по умолчанию (как в 3B). Без него все 24 слоя
-# держат активации в VRAM (~500MB/слой = 12GB) -> OOM на T4. Пересчёт на
-# backward стоит ~30% времени, но активации только 1 слоя в памяти.
-os.environ.setdefault("FSTNET_GRAD_CKPT", "1")
+# grad checkpointing: нужен при seq=2048 (активации ~12GB). При seq<=1024
+# активации ~0.8-1GB — пересчёт на backward (+30% времени) не нужен,
+# поэтому ckpt ВЫКЛЮЧЕН по умолчанию (FSTNET_GRAD_CKPT=1 вернёт).
+os.environ.setdefault("FSTNET_GRAD_CKPT", "0" if SEQ_LEN <= 1024 else "1")
 from memory_manager import enable_if_env
 mm = enable_if_env(device=device)
 if mm.enabled:
@@ -424,7 +432,7 @@ log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 
 # ─── Data ─────────────────────────────────────────────────────────────
 # Должно быть ДО OneCycleLR: TOTAL_STEPS нужен для total_steps планировщика.
-ds = ChatDS(DATA_PATH, SEQ_LEN)
+ds = ChatDS(DATA_PATH, SEQ_LEN, subsample=SAMPLE_N)
 # ── Train/val сплит (как 3B: 3% на валидацию) ──
 VAL_FRAC = float(os.environ.get("FSTNET_VAL_FRAC", "0.03"))
 VAL_MAX = int(os.environ.get("FSTNET_VAL_MAX", "512"))   # сэмплов валидации
