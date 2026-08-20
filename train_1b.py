@@ -24,6 +24,8 @@ import time
 import shutil
 import contextlib
 
+from tqdm import tqdm
+
 # Снижает фрагментацию CUDA-аллокатора (частая причина OOM на 14.56GB T4
 # даже при небольшом реальном использовании). Должно быть до первого CUDA.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -152,6 +154,7 @@ class ChatDS(Dataset):
                     self.mx = _existing
                     self.my = np.load(MMAP_Y, mmap_mode="r")
                     self.lens = np.load(MMAP_L)
+                    self._log_lens_stats(seq_len)
                     log(f"  dataset samples: {len(self.lens)} (кэш, seq={seq_len})")
                     return True
             return False
@@ -232,6 +235,7 @@ class ChatDS(Dataset):
         self.lens = lens_arr[:n]
         np.save(MMAP_L, self.lens)
         log(f"  memmap written: {MMAP_X}, {MMAP_Y}")
+        self._log_lens_stats(seq_len)
 
         # Бэкап пре-токенизации на Диск — при Factory reset Colab /content
         # очищается, и без кэша следующий запуск снова потратит ~15 мин.
@@ -251,6 +255,18 @@ class ChatDS(Dataset):
 
     def __len__(self):
         return len(self.lens)
+
+    def _log_lens_stats(self, seq_len):
+        """Статистика длин диалогов (как в 3B тренере): avg/p50/p95/p99/max.
+        Если avg много меньше seq_len — большая часть строк паддинг, SEQ
+        можно уменьшить (память attention ~O(seq^2), время впустую)."""
+        lens = self.lens
+        if len(lens) == 0:
+            return
+        log(f"  lens: avg={lens.mean():.0f} p50={np.percentile(lens, 50):.0f} "
+            f"p95={np.percentile(lens, 95):.0f} p99={np.percentile(lens, 99):.0f} "
+            f"max={lens.max():.0f} | seq={seq_len} "
+            f"(паддинг avg {100 * max(0.0, 1 - lens.mean() / seq_len):.0f}%)")
 
     def __getitem__(self, i):
         # Хвост длинных диалогов уже записан в начало строки при построении.
@@ -291,6 +307,36 @@ def save_step_ckpt(tag):
             shutil.copy2(p, os.path.join(os.path.dirname(CKPT_DRIVE), os.path.basename(p)))
         except Exception as e:
             log(f"  [WARN] drive copy failed: {e}")
+
+
+def run_val():
+    """Валидация на val-сплите (как 3B: каждые N шагов + в конце).
+    Возвращает средний CE; сохраняет best в CKPT_LOCAL при улучшении."""
+    global best_val
+    model.eval()
+    vl, vn = 0.0, 0
+    with torch.no_grad():
+        for vi, (vx, vy) in enumerate(val_loader):
+            if vi * BATCH >= VAL_MAX:
+                break
+            vx, vy = vx.to(device, non_blocking=True), vy.to(device, non_blocking=True)
+            _, l = model(vx, vy)
+            vl += l.item() * len(vx)
+            vn += len(vx)
+    val_avg = vl / max(vn, 1)
+    log(f"  VAL CE: {val_avg:.4f} (n={vn})")
+    if val_avg < best_val:
+        best_val = val_avg
+        st = {
+            "step": step,
+            "model_state": model.state_dict(),
+            "config": cfg,
+            "best_val": best_val,
+        }
+        save_ckpt(CKPT_LOCAL, st)
+        log(f"  >> best saved (val {best_val:.4f})")
+    model.train()
+    return val_avg
 
 
 # ─── Model ────────────────────────────────────────────────────────────
@@ -379,10 +425,23 @@ log(f"Optimizer: Adafactor (lr={LR}, OneCycle)")
 # ─── Data ─────────────────────────────────────────────────────────────
 # Должно быть ДО OneCycleLR: TOTAL_STEPS нужен для total_steps планировщика.
 ds = ChatDS(DATA_PATH, SEQ_LEN)
+# ── Train/val сплит (как 3B: 3% на валидацию) ──
+VAL_FRAC = float(os.environ.get("FSTNET_VAL_FRAC", "0.03"))
+VAL_MAX = int(os.environ.get("FSTNET_VAL_MAX", "512"))   # сэмплов валидации
+_rng = np.random.default_rng(42)
+_perm = _rng.permutation(len(ds))
+_val_n = max(int(len(ds) * VAL_FRAC), 1)
+_val_idx = _perm[:_val_n]
+_tr_idx = _perm[_val_n:]
+train_ds = torch.utils.data.Subset(ds, _tr_idx)
+val_ds = torch.utils.data.Subset(ds, _val_idx)
+log(f"  Train: {len(_tr_idx)}, Val: {len(_val_idx)} (val {VAL_FRAC:.0%})")
 # num_workers=0, pin_memory=False — как 3B тренер: 2 CPU на Colab,
 # воркеры упираются в CPU-блокировку. Загрузка в основном потоке.
-train_loader = DataLoader(ds, batch_size=BATCH, shuffle=True,
+train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True,
                           num_workers=0, pin_memory=False, drop_last=True)
+val_loader = DataLoader(val_ds, batch_size=BATCH, shuffle=False,
+                        num_workers=0, pin_memory=False)
 
 steps_per_epoch = max(len(train_loader) // ACCUM, 1)
 if TOTAL_STEPS is None:
@@ -423,7 +482,9 @@ opt.zero_grad(set_to_none=True)
 
 for epoch in range(EPOCHS):
     log(f"\n=== Epoch {epoch+1}/{EPOCHS} ===")
-    for it, (bx, by) in enumerate(train_loader):
+    pbar = tqdm(train_loader, desc=f"E{epoch+1}/{EPOCHS}",
+                total=len(train_loader), unit="batch", dynamic_ncols=True)
+    for it, (bx, by) in enumerate(pbar):
         bx, by = bx.to(device, non_blocking=True), by.to(device, non_blocking=True)
         if it == 0:
             vram("first batch")
@@ -453,11 +514,14 @@ for epoch in range(EPOCHS):
 
             if step % 1000 == 0:
                 save_step_ckpt("periodic")
+                run_val()
 
             # Лог на каждый шаг
             now = time.time()
             sps = (step - step0) / max(now - t0, 1e-6)
             eta = (now - t0) / max(step - step0, 1) * (TOTAL_STEPS - step)
+            pbar.set_postfix(step=f"{step}/{TOTAL_STEPS}", CE=f"{ce.item():.4f}",
+                             sps=f"{sps:.2f}", ETA=f"{eta/60:.0f}m")
             log(f"  step {step}/{TOTAL_STEPS} | CE {ce.item():.4f} | "
                 f"lr {sch.get_last_lr()[0]:.2e} | {sps:.2f} step/s | ETA {eta/60:.0f}min")
 
@@ -478,17 +542,7 @@ for epoch in range(EPOCHS):
 
 # ─── Validation ───────────────────────────────────────────────────────
 log("\nRunning validation...")
-model.eval()
-val_losses = []
-with torch.no_grad():
-    for bx, by in train_loader:
-        bx, by = bx.to(device), by.to(device)
-        logits, ce = model(bx, by)
-        val_losses.append(ce.item())
-        if len(val_losses) >= 100:
-            break
-val_avg = np.mean(val_losses)
-log(f"  val CE: {val_avg:.4f} (n={len(val_losses)})")
+val_avg = run_val()
 
 # ─── Save final ───────────────────────────────────────────────────────
 state = {
@@ -500,11 +554,6 @@ state = {
 
 save_ckpt(CKPT_FINAL, state)
 log(f"Saved final: {CKPT_FINAL}")
-
-if val_avg < best_val:
-    best_val = val_avg
-    save_ckpt(CKPT_LOCAL, state)
-    log(f"Saved best: {CKPT_LOCAL} (val={best_val:.4f})")
 
 # Upload to Drive
 if CKPT_DRIVE:
