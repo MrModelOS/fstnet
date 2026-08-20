@@ -84,8 +84,8 @@ DRIVE_CKPT = "/content/drive/MyDrive/fstnet_1b"
 
 EPOCHS = int(os.environ.get("RUN_EPOCHS", "2"))
 LR = os.environ.get("RUN_LR", "3e-4")
-BATCH = os.environ.get("RUN_BATCH", "2")
-ACCUM = os.environ.get("RUN_ACCUM", "32")
+BATCH = os.environ.get("RUN_BATCH", "4")
+ACCUM = os.environ.get("RUN_ACCUM", "16")
 
 
 def log(msg):
