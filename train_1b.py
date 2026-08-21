@@ -397,18 +397,57 @@ vram("model.to(device)")
 start_step = 0
 best_val = float("inf")
 
-if os.path.exists(CKPT_LOCAL):
-    log(f"Resuming from {CKPT_LOCAL}")
-    ck = load_ckpt(CKPT_LOCAL)
-    ms = ck["model_state"]
+def _strip_head(ms):
     if "head.scale" in ms:
         del ms["head.scale"]
     if "head.bias" in ms:
         del ms["head.bias"]
-    model.load_state_dict(ms, strict=False)
+    return ms
+
+# Источник best: локальный, иначе копия на Диске (при перезапуске
+# Colab /content стирается, но best_1b_mof.pt скопирован на Диск).
+_best_src = CKPT_LOCAL if os.path.exists(CKPT_LOCAL) else (
+    CKPT_DRIVE if (CKPT_DRIVE and os.path.exists(CKPT_DRIVE)) else "")
+
+if _best_src:
+    log(f"Resuming from {_best_src}")
+    ck = load_ckpt(_best_src)
+    ms = ck["model_state"]
+    model.load_state_dict(_strip_head(ms), strict=False)
     start_step = ck.get("step", 0)
     best_val = ck.get("best_val", float("inf"))
     log(f"  step={start_step}, best_val={best_val:.4f}")
+
+# Автопродолжение из последнего СЖАТОГО чекпоинта (если свежее best).
+# Сжатый пишется каждые CKPT_EVERY шагов — это самый свежий прогресс.
+# В нём нет best_val/optimizer -> best_val сбрасываем (пересчитается на
+# следующей валидации), optimizer state не критичен для Adafactor.
+import glob as _glob
+def _find_latest_compact():
+    """Самый свежий (max step) сжатый чекпоинт: локально + на Диске
+    (при перезапуске Colab /content стирается, но копии есть на Диске)."""
+    cands = list(_glob.glob(os.path.join(CKPT_STEP, "step_*_compact.pt")))
+    if CKPT_DRIVE:
+        cands += list(_glob.glob(os.path.join(os.path.dirname(CKPT_DRIVE),
+                                              "step_*_compact.pt")))
+    if not cands:
+        return None
+    return sorted(cands)[-1]
+
+_compact_last = _find_latest_compact()
+if _compact_last:
+    try:
+        _cc = load_ckpt(_compact_last)
+        _cstep = _cc.get("step", 0)
+        if _cstep >= start_step:
+            model.load_state_dict(_strip_head(_cc["model_state"]), strict=False)
+            start_step = _cstep
+            best_val = float("inf")  # пересчитаем при след. валидации
+            log(f"Resuming from compact {_compact_last} (step={start_step})")
+        else:
+            log(f"  compact {_compact_last} (step={_cstep}) старее best ({start_step}) — игнор")
+    except Exception as e:
+        log(f"  [WARN] compact load failed {_compact_last}: {e}")
 
 log(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.0f}M "
     f"| 1-bit storage: {cfg.bytes_1bit()/1e6:.0f}MB")
@@ -486,6 +525,13 @@ sch = torch.optim.lr_scheduler.OneCycleLR(
     opt, max_lr=LR, pct_start=0.05, div_factor=25,
     final_div_factor=100, total_steps=TOTAL_STEPS,
     cycle_momentum=False)  # Adafactor не имеет momentum/betas
+
+# Возобновление: догнать планировщик до start_step, чтобы lr совпадал
+# с позицией (иначе warmup начнётся заново с нуля).
+if start_step > 0:
+    log(f"  OneCycleLR resume: step {start_step}/{TOTAL_STEPS}")
+    for _ in range(start_step):
+        sch.step()
 
 # ─── Binarize schedule ───────────────────────────────────────────────
 def apply_phase(p):
