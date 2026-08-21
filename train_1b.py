@@ -85,6 +85,8 @@ CONTENT     = "/content" if os.path.isdir("/content") else os.path.expanduser("~
 CKPT_LOCAL  = os.path.join(CONTENT, "best_1b_mof.pt")
 CKPT_FINAL  = os.path.join(CONTENT, "final_1b_mof.pt")
 CKPT_STEP   = os.path.join(CONTENT, "ckpt_step")  # каждые 1000 шагов
+# Частое СЖАТОЕ сохранение (только веса, pack=1-bit ~121MB) каждые N шагов.
+CKPT_EVERY  = int(os.environ.get("FSTNET_CKPT_EVERY", "300"))
 
 # Google Drive
 DRIVE_PATH  = "/content/drive/MyDrive" if os.path.isdir("/content/drive/MyDrive") else ""
@@ -317,6 +319,24 @@ def save_step_ckpt(tag):
             log(f"  [WARN] drive copy failed: {e}")
 
 
+def save_step_ckpt_compact():
+    """Частое СЖАТОЕ сохранение (только веса, pack=1-bit ~121MB) каждые
+    CKPT_EVERY шагов: /content/ckpt_step/step_XXXX_compact.pt + на Drive.
+    Без optimizer/config/best_val — минимальный размер, для безопасности
+    прогресса (падение Colab не теряет >CKPT_EVERY шагов)."""
+    os.makedirs(CKPT_STEP, exist_ok=True)
+    st = {"step": step, "model_state": model.state_dict()}
+    p = os.path.join(CKPT_STEP, f"step_{step:06d}_compact.pt")
+    save_ckpt(p, st)
+    log(f"  [CKPT-compact] saved {p}")
+    if CKPT_DRIVE:
+        import shutil
+        try:
+            shutil.copy2(p, os.path.join(os.path.dirname(CKPT_DRIVE), os.path.basename(p)))
+        except Exception as e:
+            log(f"  [WARN] drive copy failed: {e}")
+
+
 def run_val():
     """Валидация на val-сплите (как 3B: каждые N шагов + в конце).
     Возвращает средний CE; сохраняет best в CKPT_LOCAL при улучшении."""
@@ -459,7 +479,7 @@ if TOTAL_STEPS is None:
     TOTAL_STEPS = steps_per_epoch * EPOCHS
 log(f"  dataset samples: {len(ds)} | steps/epoch: {steps_per_epoch}")
 log(f"  epochs: {EPOCHS} | total steps: {TOTAL_STEPS} "
-    f"| ckpt: every 1000 steps + end of epoch")
+    f"| ckpt: compact every {CKPT_EVERY} steps + full every 1000 + end of epoch")
 
 # OneCycleLR: total_steps уже вычислен
 sch = torch.optim.lr_scheduler.OneCycleLR(
@@ -523,6 +543,8 @@ for epoch in range(EPOCHS):
             step += 1
             mm.after_step()
 
+            if step % CKPT_EVERY == 0:
+                save_step_ckpt_compact()
             if step % 1000 == 0:
                 save_step_ckpt("periodic")
                 run_val()
